@@ -2,5 +2,8 @@
 # .env.example is the versioned one.
 .env
 
+# Editor settings, personal to whoever opens the folder
+.vscode/
+
 # OS junk
 .DS_Store
