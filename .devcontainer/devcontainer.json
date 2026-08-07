@@ -32,15 +32,19 @@
   // Port 3000 being public is also what lets a GitHub Actions runner reach the
   // API to test publishing.
   //
-  // (!!) `visibility` here is a Codespaces extension to the devcontainer spec,
-  // and it did NOT take effect on the first real Codespace: all three ports came
-  // up private. It is applied as the container starts, when nothing is listening
-  // on 3000 or 9000 yet.
+  // (!!) `visibility` is a Codespaces extension to the devcontainer spec, and on
+  // this repository it has never once taken effect. Tested on two fresh
+  // codespaces and on a wake-up: all three ports come up private every time. It
+  // is applied as the container starts, before anything listens on 3000 or 9000.
   //
-  // Fix it in the PORTS panel, right click a port then Port Visibility. Not with
-  // `gh codespace ports visibility`, which sets 3000 correctly but destroys the
-  // 9000 tunnel every time, leaving that port unreachable until it is forwarded
-  // again by hand.
+  // So it is kept as a statement of intent, not as something that works. The
+  // ports have to be set public by hand, in the PORTS panel, right click a port
+  // then Port Visibility, and again after every wake-up. postAttachCommand below
+  // is the reminder.
+  //
+  // Not with `gh codespace ports visibility`, which sets 3000 correctly but
+  // destroys the 9000 tunnel every time, leaving that port answering 404 until
+  // it is forwarded again by hand.
   "portsAttributes": {
     "8080": { "label": "DSW client", "visibility": "private" },
     "3000": { "label": "DSW server API", "visibility": "public" },
@@ -64,5 +68,11 @@
   // whole reason this is not setup.sh: a new RSA key would invalidate every
   // token already issued, and a new Postgres password would no longer match the
   // account created at the first initdb.
-  "postStartCommand": "docker compose up -d"
+  "postStartCommand": "docker compose up -d",
+
+  // Runs every time you connect, wake-ups included, and prints into a terminal
+  // where it will actually be read. It exists because port visibility resets to
+  // private on every wake-up, and setup.sh only runs at creation, so without
+  // this nothing would explain why the client suddenly cannot reach the API.
+  "postAttachCommand": "echo '(!) Ports come back private after every wake-up. Set 3000 public in the PORTS panel, and 9000 too for document downloads.'"
 }

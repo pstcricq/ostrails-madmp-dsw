@@ -87,6 +87,14 @@ ways that look like bugs.
 
 Port 3000 being public is also what lets a GitHub Actions runner reach the API.
 
+**Visibility has to be set by hand**, in the PORTS panel of VS Code: right click
+a port, then Port Visibility. `devcontainer.json` declares it, but the
+declaration has never taken effect, on a fresh codespace or on a wake-up. The
+ports come back private every time the codespace sleeps, so this is not a
+one-off. Do not use `gh codespace ports visibility` for port 9000: it sets 3000
+correctly but destroys the 9000 tunnel, which then answers 404 until it is
+forwarded again by hand.
+
 Everything is bound to `127.0.0.1` on the host. Publishing on `0.0.0.0`, which
 upstream does for MinIO, exposes the service to the whole network the machine
 sits on, and on Linux it bypasses `ufw` entirely.
