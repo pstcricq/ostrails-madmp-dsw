@@ -33,10 +33,14 @@
   // API to test publishing.
   //
   // (!!) `visibility` here is a Codespaces extension to the devcontainer spec,
-  // and there is a known issue where it does not take effect on the very first
-  // boot. If a port comes up private, force it from a terminal:
+  // and it did NOT take effect on the first real Codespace: all three ports came
+  // up private. It is applied as the container starts, when nothing is listening
+  // on 3000 or 9000 yet.
   //
-  //   gh codespace ports visibility 3000:public 9000:public -c $CODESPACE_NAME
+  // Fix it in the PORTS panel, right click a port then Port Visibility. Not with
+  // `gh codespace ports visibility`, which sets 3000 correctly but destroys the
+  // 9000 tunnel every time, leaving that port unreachable until it is forwarded
+  // again by hand.
   "portsAttributes": {
     "8080": { "label": "DSW client", "visibility": "private" },
     "3000": { "label": "DSW server API", "visibility": "public" },
