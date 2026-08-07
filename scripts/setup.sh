@@ -36,15 +36,32 @@ env_get() { sed -n "s/^$1=//p" .env | head -1 | tr -d '"'; }
 # both happy.
 env_set() { sed -i.bak "s|^$1=.*|$1=$2|" .env && rm -f .env.bak; }
 
-# Builds JSON with python rather than string interpolation, so a password
-# holding a quote or a backslash cannot break the request or inject into it.
-json() { python3 -c 'import json,sys; print(json.dumps(dict(zip(sys.argv[1::2], sys.argv[2::2]))))' "$@"; }
+# Everything below stays in the shell on purpose. The Codespace base image has
+# curl, sed and openssl but no python3, and a bootstrap script that needs a
+# language runtime installed first is a bootstrap script that does not work.
 
-# Logs in and prints a token, or prints nothing and returns 1.
+# Escapes a value for use inside a JSON string. Backslash first, then quote, so
+# the second substitution cannot re-escape what the first produced. This is what
+# stops a password holding a quote from breaking the request or injecting.
+json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+
+# Logs in and prints a token, or prints nothing. A JWT is base64url, so it never
+# contains a quote and the field can be cut out with sed.
 login() {
   curl -fsS -X POST "$API/tokens" -H 'Content-Type: application/json' \
-    -d "$(json email "$1" password "$2")" 2>/dev/null \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])' 2>/dev/null
+    -d "{\"email\":\"$(json_escape "$1")\",\"password\":\"$(json_escape "$2")\"}" 2>/dev/null \
+    | sed -n 's/.*"token":"\([^"]*\)".*/\1/p'
+}
+
+# Prints the uuid of the user at this exact address, or nothing. A user object
+# holds no nested object, so splitting the payload on `{` puts one user per
+# line, with its address and its uuid together on that line.
+user_uuid() {
+  curl -fsS "$API/users?q=$1" -H "Authorization: Bearer $2" \
+    | tr '{' '\n' \
+    | grep -F "\"email\":\"$1\"" \
+    | sed -n 's/.*"uuid":"\([0-9a-f-]\{36\}\)".*/\1/p' \
+    | head -1
 }
 
 # --- 1. .env ----------------------------------------------------------------
@@ -148,11 +165,7 @@ curl -fs -o /dev/null "$API/configs/bootstrap" || {
 # only then delete the seeded ones. The reverse locks you out of your own
 # instance with no way back but psql.
 notes=""
-if ! command -v python3 > /dev/null; then
-  notes="$notes
- (!) python3 is missing, so the admin bootstrap was skipped. It is the only
-     step that needs it, for building and reading JSON safely."
-elif [ -z "${DSW_ADMIN_EMAIL:-}" ] || [ -z "${DSW_ADMIN_PASSWORD:-}" ]; then
+if [ -z "${DSW_ADMIN_EMAIL:-}" ] || [ -z "${DSW_ADMIN_PASSWORD:-}" ]; then
   # Only warn if the demo account really answers. Once it has been removed by an
   # earlier run, saying the instance is wide open would be plainly false, and a
   # security warning that cries wolf is worse than none.
@@ -175,8 +188,7 @@ else
     echo "Creating admin account $DSW_ADMIN_EMAIL..."
     curl -fsS -X POST "$API/users" \
       -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-      -d "$(json email "$DSW_ADMIN_EMAIL" firstName "DSW" lastName "Admin" \
-                 password "$DSW_ADMIN_PASSWORD" role admin)" > /dev/null
+      -d "{\"email\":\"$(json_escape "$DSW_ADMIN_EMAIL")\",\"firstName\":\"DSW\",\"lastName\":\"Admin\",\"password\":\"$(json_escape "$DSW_ADMIN_PASSWORD")\",\"role\":\"admin\",\"affiliation\":null}" > /dev/null
 
     # The proof, not the assumption.
     NEW_TOKEN="$(login "$DSW_ADMIN_EMAIL" "$DSW_ADMIN_PASSWORD" || true)"
@@ -186,11 +198,7 @@ else
      were kept. Look into it before exposing this instance."
     else
       for email in $DEMO_ACCOUNTS; do
-        uuid="$(curl -fsS "$API/users?q=$email" -H "Authorization: Bearer $NEW_TOKEN" \
-          | python3 -c 'import json,sys
-d = json.load(sys.stdin)
-users = d.get("_embedded", {}).get("users", [])
-print(next((u["uuid"] for u in users if u["email"] == sys.argv[1]), ""))' "$email")"
+        uuid="$(user_uuid "$email" "$NEW_TOKEN")"
         [ -z "$uuid" ] || curl -fsS -X DELETE "$API/users/$uuid" \
           -H "Authorization: Bearer $NEW_TOKEN" > /dev/null
       done
