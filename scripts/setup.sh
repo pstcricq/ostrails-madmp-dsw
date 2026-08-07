@@ -9,7 +9,8 @@
 #   3. four secrets    generated if still empty, before the first `up`
 #   4. the stack       docker compose up -d
 #   5. the bucket      DSW does not create its own
-#   6. the admin       your own account, replacing the seeded demo ones
+#   6. port visibility in a Codespace, once the ports actually listen
+#   7. the admin       your own account, replacing the seeded demo ones
 #
 # Idempotent throughout. An existing value is never overwritten, which matters
 # more than it looks: the Postgres account is created once at the first initdb,
@@ -157,14 +158,41 @@ curl -fs -o /dev/null "$API/configs/bootstrap" || {
   exit 1
 }
 
-# --- 7. Your admin account --------------------------------------------------
+notes=""
+
+# --- 7. Port visibility -----------------------------------------------------
+# devcontainer.json declares 3000 and 9000 public, and on the first real
+# Codespace neither of them came up that way. The declaration is applied when
+# the container starts, at which point nothing is listening on either port yet,
+# so there is no tunnel to configure. The 9000 tunnel was dropped outright and
+# could not even be forced afterwards, answering 404.
+#
+# Doing it here fixes both at once, because by now the stack is up and both
+# ports answer. The declaration in devcontainer.json is kept as documentation
+# of intent, this is what makes it true.
+#
+# Never fatal: a Codespace that comes up private is inconvenient, not broken,
+# and the note says exactly how to finish by hand.
+if [ -n "${CODESPACE_NAME:-}" ]; then
+  if command -v gh > /dev/null &&
+     gh codespace ports visibility 3000:public 9000:public -c "$CODESPACE_NAME" > /dev/null 2>&1; then
+    echo "Ports 3000 and 9000 set to public."
+  else
+    notes="$notes
+ (!) Could not set port visibility. The client will fail to reach the API and
+     documents will not download until 3000 and 9000 are public. Fix it in the
+     PORTS panel, right click a port then Port Visibility, or run:
+       gh codespace ports visibility 3000:public 9000:public -c \$CODESPACE_NAME"
+  fi
+fi
+
+# --- 8. Your admin account --------------------------------------------------
 # DSW seeds three demo accounts whose addresses and password are published. On a
 # Codespace with port 3000 public, that is the whole security of the instance.
 #
 # The order matters and is not negotiable: create yours, prove it logs in, and
 # only then delete the seeded ones. The reverse locks you out of your own
 # instance with no way back but psql.
-notes=""
 if [ -z "${DSW_ADMIN_EMAIL:-}" ] || [ -z "${DSW_ADMIN_PASSWORD:-}" ]; then
   # Only warn if the demo account really answers. Once it has been removed by an
   # earlier run, saying the instance is wide open would be plainly false, and a
@@ -207,7 +235,7 @@ else
   fi
 fi
 
-# --- 8. Summary -------------------------------------------------------------
+# --- 9. Summary -------------------------------------------------------------
 echo ""
 echo "======================================================================"
 echo " DSW is up."
