@@ -148,11 +148,21 @@ curl -fs -o /dev/null "$API/configs/bootstrap" || {
 # only then delete the seeded ones. The reverse locks you out of your own
 # instance with no way back but psql.
 notes=""
-if [ -z "${DSW_ADMIN_EMAIL:-}" ] || [ -z "${DSW_ADMIN_PASSWORD:-}" ]; then
+if ! command -v python3 > /dev/null; then
   notes="$notes
+ (!) python3 is missing, so the admin bootstrap was skipped. It is the only
+     step that needs it, for building and reading JSON safely."
+elif [ -z "${DSW_ADMIN_EMAIL:-}" ] || [ -z "${DSW_ADMIN_PASSWORD:-}" ]; then
+  # Only warn if the demo account really answers. Once it has been removed by an
+  # earlier run, saying the instance is wide open would be plainly false, and a
+  # security warning that cries wolf is worse than none.
+  if login "$DEMO_EMAIL" "$DEMO_PASSWORD" > /dev/null 2>&1; then
+    notes="$notes
  (!) DSW_ADMIN_EMAIL / DSW_ADMIN_PASSWORD are not set, so the demo accounts
-     were left alone. The instance is open on $DEMO_EMAIL / $DEMO_PASSWORD.
+     were left alone. Anyone reaching this instance can log in as
+     $DEMO_EMAIL / $DEMO_PASSWORD.
      Set them as Codespaces Secrets before making port 3000 public."
+  fi
 elif login "$DSW_ADMIN_EMAIL" "$DSW_ADMIN_PASSWORD" > /dev/null 2>&1; then
   echo "Admin account $DSW_ADMIN_EMAIL already in place."
 else

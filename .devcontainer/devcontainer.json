@@ -1,0 +1,64 @@
+// Codespaces and VS Code look for this file at this exact path. It declares an
+// environment and says which command runs at which point of the lifecycle. It
+// orchestrates nothing: the work is in scripts/setup.sh, which you also run
+// locally, so a laptop run rehearses what the cloud does.
+{
+  "name": "madmp-dsw",
+
+  // A plain Ubuntu, plus a Docker daemon. Our stack is docker compose, so the
+  // Codespace needs one. Note the nesting this creates: the Codespace is itself
+  // a container, and the five DSW containers run inside it.
+  //
+  // setup.sh also needs openssl and python3, both already in this image.
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+
+  "forwardPorts": [8080, 3000, 9000],
+
+  // Visibility is the whole point of this block, and GitHub offers exactly two
+  // useful values. `private` means you alone, authenticated by a GitHub cookie.
+  // `public` means anyone holding the URL, with no authentication at all.
+  //
+  // The split below is not a preference, it follows from how the app works. A
+  // private port is fine for a page you navigate to, because the browser sends
+  // its GitHub cookie on a first-party navigation. It is not sent on a
+  // cross-origin request, and both of the other two are read cross-origin: the
+  // client calls the API by XHR, and the browser fetches documents straight
+  // from MinIO through a presigned URL. Leave those private and the application
+  // breaks in ways that look like bugs.
+  //
+  // Port 3000 being public is also what lets a GitHub Actions runner reach the
+  // API to test publishing.
+  //
+  // (!!) `visibility` here is a Codespaces extension to the devcontainer spec,
+  // and there is a known issue where it does not take effect on the very first
+  // boot. If a port comes up private, force it from a terminal:
+  //
+  //   gh codespace ports visibility 3000:public 9000:public -c $CODESPACE_NAME
+  "portsAttributes": {
+    "8080": { "label": "DSW client", "visibility": "private" },
+    "3000": { "label": "DSW server API", "visibility": "public" },
+    "9000": { "label": "MinIO S3 API", "visibility": "public" }
+  },
+
+  // Codespaces forwards any port it sees listening, which would pick up MinIO's
+  // admin console on 9001. It stays reachable inside the Codespace and off the
+  // Ports panel, which is exactly what we decided for it.
+  "otherPortsAttributes": { "onAutoForward": "ignore" },
+
+  // postCreateCommand rather than onCreateCommand: this one runs in the
+  // Codespace itself, once the secrets have been copied into the environment.
+  // onCreateCommand runs earlier, and would run inside a prebuild if prebuilds
+  // were ever enabled on this repository, where DSW_ADMIN_EMAIL and
+  // DSW_ADMIN_PASSWORD would not exist yet.
+  "postCreateCommand": "bash scripts/setup.sh",
+
+  // On every restart. A sleeping Codespace keeps its disk but not its running
+  // containers. Secrets are deliberately not regenerated here, which is the
+  // whole reason this is not setup.sh: a new RSA key would invalidate every
+  // token already issued, and a new Postgres password would no longer match the
+  // account created at the first initdb.
+  "postStartCommand": "docker compose up -d"
+}
