@@ -1,0 +1,176 @@
+# Pinned so containers, volumes and the compose network keep their names if the
+# folder is ever renamed. create-bucket.sh names the network, and that is
+# exactly what upstream's hardcoded value got wrong.
+name: madmp-dsw
+
+# DSW's own configuration, passed as environment rather than through a mounted
+# application.yml. Every name below is that file's YAML path in upper case, and
+# DSW resolves a setting by looking at the environment first, then its config
+# file, then a default compiled into the image.
+#
+# The point of doing it this way is that .env stays the single source of truth.
+# The Postgres password is written once, there, and composed into the connection
+# string here, so it cannot drift the way it does when the same value is spelled
+# out in two files.
+#
+# (!!) The image ships its own application.yml underneath, and its defaults are
+# not neutral: it names the database `wizard` where ours is `engine-wizard`. Set
+# every value that matters rather than relying on a fallback.
+# No `:-default` anywhere in this file. .env.example is where a default value is
+# written down and explained, and repeating it here would give it a second home
+# to drift from. A variable missing from .env resolves to an empty string and
+# compose says which one, which is the failure we want.
+x-dsw-config: &dsw-config
+  GENERAL_CLIENT_URL: ${CLIENT_URL}
+  GENERAL_SECRET: ${GENERAL_SECRET}
+  GENERAL_RSA_PRIVATE_KEY: ${GENERAL_RSA_PRIVATE_KEY}
+  DATABASE_CONNECTION_STRING: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/engine-wizard
+  S3_URL: ${S3_URL}
+  S3_USERNAME: ${MINIO_ROOT_USER}
+  S3_PASSWORD: ${MINIO_ROOT_PASSWORD}
+  S3_BUCKET: ${S3_BUCKET}
+
+services:
+
+  # server and docworker get the same block, which is what mounting one shared
+  # application.yml into both used to do.
+  server:
+    image: datastewardshipwizard/wizard-server:${DSW_VERSION}
+    platform: linux/amd64
+    restart: always
+    ports:
+    # (!!) Expose only for local deployment, externally use HTTPS proxy
+      - 127.0.0.1:3000:3000
+    depends_on:
+      - postgres
+      - minio
+    environment: *dsw-config
+    extra_hosts:
+      - host.docker.internal:host-gateway
+
+  client:
+    image: datastewardshipwizard/wizard-client:${DSW_VERSION}
+    restart: always
+    ports:
+    # (!!) Expose only for local deployment, externally use HTTPS proxy
+      - 127.0.0.1:8080:8080
+    environment:
+      # Not a DSW config path, this one is the client image's own variable. The
+      # browser calls the API itself, the client only tells it where, so this
+      # has to be an address the *user's* machine resolves, never a compose
+      # service name. A Codespace needs the forwarded URL.
+      API_URL: ${API_URL}
+
+  docworker:
+    image: datastewardshipwizard/document-worker:${DSW_VERSION}
+    restart: always
+    depends_on:
+      - postgres
+      - minio
+      - server
+    environment: *dsw-config
+    extra_hosts:
+      - host.docker.internal:host-gateway
+
+  # Commented out rather than deleted: with mail disabled it has nothing to
+  # process and idles forever.
+  #
+  # What that costs: no password reset and no e-mail invitation. Both are
+  # already impossible without mail, so nothing is lost, but it does mean a
+  # forgotten admin password is recovered through psql, not a button.
+  #
+  # (!!) Uncomment it together with enabling mail. Enabling mail without it
+  # fails silently: the server queues mailer commands nobody processes, and the
+  # interface still reports the message as sent.
+  # mailer:
+  #   image: datastewardshipwizard/mailer:${DSW_VERSION}
+  #   restart: always
+  #   depends_on:
+  #     - postgres
+  #     - server
+  #   environment: *dsw-config
+
+  postgres:
+    image: postgres:${POSTGRES_VERSION}
+    restart: always
+    # Not published: nothing on the host calls it. Containers reach it as
+    # postgres:5432 on the compose network, and inspecting it does not need a
+    # port either, since `docker compose exec postgres psql -U postgres -d
+    # engine-wizard` goes through the Docker daemon.
+    # (!!) The account is created once, at the first initdb. Setting real
+    # credentials in .env afterwards has no effect on the database.
+    environment:
+      POSTGRES_DB: engine-wizard
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio:${MINIO_VERSION}
+    restart: always
+    command: server /data --console-address ":9001"
+    ports:
+      # 9000 is the S3 API and has to stay published: the browser fetches
+      # documents straight from MinIO through a presigned URL, so S3_URL must be
+      # resolvable from the user's machine.
+      # 9001 is MinIO's own admin console, a human UI over the bucket. Kept for
+      # local inspection, and deliberately not forwarded online.
+      - 127.0.0.1:9000:9000
+      - 127.0.0.1:9001:9001
+    # (!!) Defaults come from .env, change them before anything shared.
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_VOLUMES: /data
+    volumes:
+      - s3-data:/data
+    # `up -d` returns once the containers are created, not once they answer.
+    # createbucket waits on this rather than on a sleep.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # Creates the bucket DSW writes into. DSW does not create it itself: in the S3
+  # API, CreateBucket and PutObject are separate operations with separate
+  # rights, and writing to a missing bucket returns NoSuchBucket. So this has to
+  # run once, after the stack is up:
+  #
+  #   docker compose run --rm createbucket
+  #
+  # `profiles` keeps it out of `docker compose up`, which would otherwise treat
+  # a one-shot task as a service that keeps stopping.
+  #
+  # Being a compose service rather than a shell script is what makes it correct:
+  # compose knows its own network, loads .env, and resolves ${MC_VERSION}. The
+  # upstream script guessed all three and got the network and the image tag
+  # wrong. The `$$` below escape compose's own interpolation, leaving the
+  # variables for the container's shell, so no credential is ever written on a
+  # command line the host can see.
+  createbucket:
+    image: minio/mc:${MC_VERSION}
+    profiles: [tools]
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET}
+    entrypoint: sh
+    command:
+      - -c
+      - |
+        mc alias set dsw http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" > /dev/null &&
+        mc mb --ignore-existing dsw/"$$S3_BUCKET" &&
+        echo "bucket $$S3_BUCKET ready"
+
+# Named volumes rather than bind mounts: they behave identically on macOS, Linux
+# and Codespaces, where a bind mount would go through Docker Desktop's file
+# sharing layer. Without them, `docker compose down` destroys everything:
+# accounts, knowledge models, projects, documents, and the bucket itself.
+volumes:
+  db-data:
+  s3-data:

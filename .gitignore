@@ -1,0 +1,6 @@
+# Holds the deployment's credentials, and its values differ on every machine.
+# .env.example is the versioned one.
+.env
+
+# OS junk
+.DS_Store
