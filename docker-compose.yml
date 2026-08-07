@@ -68,7 +68,15 @@ services:
       - postgres
       - minio
       - server
-    environment: *dsw-config
+    environment:
+      <<: *dsw-config
+      # The image bakes APPLICATION_CONFIG_PATH=/app/config/application.yml, and
+      # its CLI checks that the path exists before reading any configuration. So
+      # the file has to be there even when every setting comes from the
+      # environment. /dev/null passes the check and parses as an empty document,
+      # which leaves the environment as the only source. The server has no such
+      # requirement, it starts with no config file at all.
+      APPLICATION_CONFIG_PATH: /dev/null
     extra_hosts:
       - host.docker.internal:host-gateway
 
@@ -88,7 +96,9 @@ services:
   #   depends_on:
   #     - postgres
   #     - server
-  #   environment: *dsw-config
+  #   environment:
+  #     <<: *dsw-config
+  #     APPLICATION_CONFIG_PATH: /dev/null   # same requirement as docworker
 
   postgres:
     image: postgres:${POSTGRES_VERSION}
