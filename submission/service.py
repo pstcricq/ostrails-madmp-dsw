@@ -35,8 +35,10 @@ class SubmissionError(ValueError):
 class SubmissionConfig:
     """Static webhook configuration (from the environment, see app.py)."""
 
+    # Both required, neither defaulted: the values live in .env.example and
+    # nowhere else, and app.py refuses to build this without them.
     github_owner: str  # account owning the dmp-registry repo
-    registry_repo: str = "dmp-registry"  # the mono-repo all projects live in
+    registry_repo: str  # the mono-repo all projects live in
 
 
 def handle_submission(

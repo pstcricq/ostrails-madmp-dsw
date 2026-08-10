@@ -36,12 +36,27 @@ from service import SubmissionConfig, SubmissionError, handle_submission
 app = FastAPI(title="maDMP submission webhook")
 
 
+def _required(name: str) -> str:
+    """The variable's value, refusing both the missing and the empty case.
+
+    They are the same failure and have to be treated alike: compose always
+    defines what its `environment:` block lists, so a value absent from .env
+    arrives here as an empty string rather than not at all. A default written in
+    this file would therefore never apply, and would read as a guarantee it
+    could not keep. The value's one home is .env.example.
+    """
+    value = os.environ.get(name, "")
+    if not value:
+        raise RuntimeError(f"{name} is not set")
+    return value
+
+
 def _config() -> SubmissionConfig:
     # The field stays `github_owner` — it really is a GitHub account. Only the
     # environment variable is namespaced, to keep it collision-free.
     return SubmissionConfig(
-        github_owner=os.environ["REGISTRY_OWNER"],
-        registry_repo=os.environ.get("REGISTRY_REPO", "dmp-registry"),
+        github_owner=_required("REGISTRY_OWNER"),
+        registry_repo=_required("REGISTRY_REPO"),
     )
 
 

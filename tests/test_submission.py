@@ -7,7 +7,7 @@ import base64
 import json
 
 import pytest
-from app import app
+from app import _config, app
 from fastapi.testclient import TestClient
 from service import (
     SubmissionConfig,
@@ -15,9 +15,7 @@ from service import (
     handle_submission,
 )
 
-CONFIG = SubmissionConfig(
-    github_owner="Pierrott64"
-)  # registry_repo defaults to dmp-registry
+CONFIG = SubmissionConfig(github_owner="Pierrott64", registry_repo="dmp-registry")
 DSW_URL = "http://localhost:8080/wizard/projects/7c42caa4-a0e0-4112-9623-4334641c457a"
 DMP_PATH = "projects/glider/template/dmp_glider_template.json"
 RAW_URL = f"https://raw.githubusercontent.com/Pierrott64/dmp-registry/main/{DMP_PATH}"
@@ -173,6 +171,40 @@ def test_http_multipart_body(client):
     )
     assert response.status_code == 200
     assert response.json()["action"] in ("created", "unchanged")
+
+
+# Configuration read from the environment
+#
+# The three cases matter because compose always defines what its `environment:`
+# block lists: a value absent from .env reaches the container as an empty string,
+# not as a missing variable. Both must fail, and fail the same way, or the
+# webhook commits somewhere nobody asked for.
+
+
+def test_config_reads_the_environment(monkeypatch):
+    monkeypatch.setenv("REGISTRY_OWNER", "Pierrott64")
+    monkeypatch.setenv("REGISTRY_REPO", "dmp-registry")
+    config = _config()
+    assert config.github_owner == "Pierrott64"
+    assert config.registry_repo == "dmp-registry"
+
+
+@pytest.mark.parametrize("missing", ["REGISTRY_OWNER", "REGISTRY_REPO"])
+def test_config_refuses_an_unset_variable(monkeypatch, missing):
+    monkeypatch.setenv("REGISTRY_OWNER", "Pierrott64")
+    monkeypatch.setenv("REGISTRY_REPO", "dmp-registry")
+    monkeypatch.delenv(missing)
+    with pytest.raises(RuntimeError, match=missing):
+        _config()
+
+
+@pytest.mark.parametrize("empty", ["REGISTRY_OWNER", "REGISTRY_REPO"])
+def test_config_refuses_an_empty_variable(monkeypatch, empty):
+    monkeypatch.setenv("REGISTRY_OWNER", "Pierrott64")
+    monkeypatch.setenv("REGISTRY_REPO", "dmp-registry")
+    monkeypatch.setenv(empty, "")
+    with pytest.raises(RuntimeError, match=empty):
+        _config()
 
 
 def test_http_bad_json_is_400(client):
