@@ -84,8 +84,18 @@ fi
 # --- 2. Where are we? -------------------------------------------------------
 # The three URLs are the only values that depend on where the stack runs,
 # because they are what the *browser* resolves, and in a Codespace the browser
-# sits on another machine entirely. CODESPACE_NAME is set by GitHub and exists
-# nowhere else, so its absence is what "local" means.
+# sits on another machine entirely.
+#
+# Three cases, and only one of them needs code. On a laptop the URLs are known
+# and fixed, .env.example ships them. On a server they are known too, so they
+# belong in .env, written once. A Codespace is the only place where they cannot
+# be known in advance, because GitHub draws the name at creation, so that is the
+# only case computed here. CODESPACE_NAME is set by GitHub and exists nowhere
+# else, which is what makes it the test.
+#
+# Anywhere else this reads .env rather than assuming, so a server deployment
+# needs nothing added below. Adding a third branch would give those URLs a
+# second home to drift from.
 if [ -n "${CODESPACE_NAME:-}" ]; then
   DOMAIN="${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-app.github.dev}"
   env_set API_URL    "https://${CODESPACE_NAME}-3000.${DOMAIN}/wizard-api"
@@ -94,7 +104,13 @@ if [ -n "${CODESPACE_NAME:-}" ]; then
   env_set S3_URL     "https://${CODESPACE_NAME}-9000.${DOMAIN}"
   echo "Codespace detected, the three URLs point at the forwarded domain."
 else
-  echo "Local run, the three URLs stay on localhost."
+  # Reported rather than assumed. This used to claim the URLs were on localhost,
+  # which is true on a laptop and false on any server, and it is the one place
+  # where a wrong URL would otherwise go unnoticed until the client fails.
+  echo "No Codespace detected, the three URLs are used as they stand in .env:"
+  echo "  client  $(env_get CLIENT_URL)"
+  echo "  api     $(env_get API_URL)"
+  echo "  s3      $(env_get S3_URL)"
 fi
 
 # --- 3. Secrets -------------------------------------------------------------
@@ -173,8 +189,9 @@ notes=""
 # the demo accounts below are gone before any port becomes public.
 
 # --- 7. Your admin account --------------------------------------------------
-# DSW seeds three demo accounts whose addresses and password are published. On a
-# Codespace with port 3000 public, that is the whole security of the instance.
+# DSW seeds three demo accounts whose addresses and password are published. The
+# moment this instance is reachable by anyone else, a Codespace with port 3000
+# public or a server behind a proxy, those accounts are its whole security.
 #
 # The order matters and is not negotiable: create yours, prove it logs in, and
 # only then delete the seeded ones. The reverse locks you out of your own
@@ -186,9 +203,11 @@ if [ -z "${DSW_ADMIN_EMAIL:-}" ] || [ -z "${DSW_ADMIN_PASSWORD:-}" ]; then
   if login "$DEMO_EMAIL" "$DEMO_PASSWORD" > /dev/null 2>&1; then
     notes="$notes
  (!) DSW_ADMIN_EMAIL / DSW_ADMIN_PASSWORD are not set, so the demo accounts
-     were left alone. Anyone reaching this instance can log in as
-     $DEMO_EMAIL / $DEMO_PASSWORD.
-     Set them as Codespaces Secrets before making port 3000 public."
+     were left alone. These credentials open this instance:
+         $DEMO_EMAIL / $DEMO_PASSWORD
+     That costs nothing while it is only bound to the loopback. Export the two
+     variables, or set them as repository Codespaces Secrets, before this
+     instance is reachable from anywhere else."
   fi
 elif login "$DSW_ADMIN_EMAIL" "$DSW_ADMIN_PASSWORD" > /dev/null 2>&1; then
   echo "Admin account $DSW_ADMIN_EMAIL already in place."
