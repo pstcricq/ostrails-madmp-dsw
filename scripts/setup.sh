@@ -11,9 +11,11 @@
 #   5. the bucket      DSW does not create its own
 #   6. the admin       your own account, replacing the seeded demo ones
 #
-# Idempotent throughout. An existing value is never overwritten, which matters
-# more than it looks: the Postgres account is created once at the first initdb,
-# and regenerating the RSA key would invalidate every token already issued.
+# Idempotent throughout. A secret already in .env is never regenerated, which
+# matters more than it looks: the Postgres account is created once at the first
+# initdb, and a new RSA key would invalidate every token already issued. The
+# three URLs are the exception, recomputed on every run, because they say where
+# the stack is reached from and that changes with the machine.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -47,6 +49,11 @@ json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 
 # Logs in and prints a token, or prints nothing. A JWT is base64url, so it never
 # contains a quote and the field can be cut out with sed.
+#
+# (!!) Callers below test the exit status, and that only works because of
+# `pipefail` at the top. Without it the status would be sed's, which succeeds on
+# empty input, so a failed login would look like a successful one and the admin
+# account would never be created.
 login() {
   curl -fsS -X POST "$API/tokens" -H 'Content-Type: application/json' \
     -d "{\"email\":\"$(json_escape "$1")\",\"password\":\"$(json_escape "$2")\"}" 2>/dev/null \
@@ -219,7 +226,11 @@ else
      were kept. Look into it before exposing this instance."
     else
       for email in $DEMO_ACCOUNTS; do
-        uuid="$(user_uuid "$email" "$NEW_TOKEN")"
+        # `|| true` is not decoration. user_uuid ends on a grep that exits 1 when
+        # the account is already gone, pipefail carries that out of the pipeline,
+        # and set -e would end the script right here, after the admin was created
+        # and before anything was printed.
+        uuid="$(user_uuid "$email" "$NEW_TOKEN" || true)"
         [ -z "$uuid" ] || curl -fsS -X DELETE "$API/users/$uuid" \
           -H "Authorization: Bearer $NEW_TOKEN" > /dev/null
       done

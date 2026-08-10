@@ -9,7 +9,10 @@
   // Codespace needs one. Note the nesting this creates: the Codespace is itself
   // a container, and the five DSW containers run inside it.
   //
-  // setup.sh also needs openssl and python3, both already in this image.
+  // Beyond that daemon, setup.sh needs curl, sed and openssl, and this image has
+  // all three. It deliberately needs nothing else: there is no python3 here, and
+  // a bootstrap script that starts by installing a language runtime is a
+  // bootstrap script that does not work.
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
   "features": {
     "ghcr.io/devcontainers/features/docker-in-docker:2": {}
