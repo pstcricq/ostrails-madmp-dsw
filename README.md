@@ -6,7 +6,7 @@ at in a browser.
 
 It starts from the [official deployment
 example](https://github.com/ds-wizard/dsw-deployment-example) at its 4.31
-release, kept as the `upstream` remote, and is reduced to seven files.
+release, kept as the `upstream` remote, and is reduced to eight files.
 
 ## Quick start
 
@@ -34,6 +34,7 @@ forwarded domain instead of localhost.
 | `docker-compose.yml` | the five services, plus a one-shot bucket creator |
 | `.env.example` | every value the stack reads, with its defaults documented |
 | `scripts/setup.sh` | from nothing to a running stack, in one command |
+| `scripts/publish-ports.sh` | makes 3000 and 9000 public, at every start |
 | `.devcontainer/devcontainer.json` | the Codespace: ports, visibility, lifecycle |
 
 ## Configuration
@@ -87,13 +88,21 @@ ways that look like bugs.
 
 Port 3000 being public is also what lets a GitHub Actions runner reach the API.
 
-**Visibility has to be set by hand**, in the PORTS panel of VS Code: right click
-a port, then Port Visibility. `devcontainer.json` declares it, but the
-declaration has never taken effect, on a fresh codespace or on a wake-up. The
-ports come back private every time the codespace sleeps, so this is not a
-one-off. Do not use `gh codespace ports visibility` for port 9000: it sets 3000
-correctly but destroys the 9000 tunnel, which then answers 404 until it is
-forwarded again by hand.
+**Visibility is set by `scripts/publish-ports.sh`, not by the devcontainer.**
+`portsAttributes` carries labels and nothing more. Its `visibility` key was never
+implemented by GitHub, it is an open feature request, so declaring it there would
+read as a setting while doing nothing. The ports come up private on a fresh
+codespace and again after every wake-up, and `postStartCommand` publishes them
+each time.
+
+The script waits for both services to answer locally before publishing, then
+reads the visibility back rather than trusting the command's exit status. Both
+matter: a call issued before the stack was up once left 9000 private while
+reporting success.
+
+Nothing to do by hand, then. If it ever fails it says so and the start is marked
+failed, and the PORTS panel of VS Code remains the fallback, right click a port
+then Port Visibility.
 
 Everything is bound to `127.0.0.1` on the host. Publishing on `0.0.0.0`, which
 upstream does for MinIO, exposes the service to the whole network the machine
