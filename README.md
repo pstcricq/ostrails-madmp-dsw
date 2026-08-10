@@ -37,13 +37,21 @@ http:// https://` or a root redirect of its own.
 
 ## What is in here
 
+The split is deliberate: `.devcontainer/` holds what only a Codespace needs and
+what any other deployment can delete outright, everything else applies wherever
+the stack runs.
+
 | File | Role |
 |---|---|
 | `docker-compose.yml` | the five services, plus a one-shot bucket creator |
 | `.env.example` | every value the stack reads, with its defaults documented |
 | `scripts/setup.sh` | from nothing to a running stack, in one command |
-| `scripts/publish-ports.sh` | makes 3000 and 9000 public, at every start |
-| `.devcontainer/devcontainer.json` | the Codespace: ports, visibility, lifecycle |
+| `.devcontainer/devcontainer.json` | the Codespace: ports, lifecycle |
+| `.devcontainer/publish-ports.sh` | makes 3000 and 9000 public, at every start |
+
+`setup.sh` is the one general script, and it is Codespace-aware in exactly one
+place, the section that computes the three URLs. Give it a third case, or write
+those URLs into `.env` by hand, and it serves any host.
 
 ## Configuration
 
@@ -96,7 +104,7 @@ ways that look like bugs.
 
 Port 3000 being public is also what lets a GitHub Actions runner reach the API.
 
-**Visibility is set by `scripts/publish-ports.sh`, not by the devcontainer.**
+**Visibility is set by `.devcontainer/publish-ports.sh`, not by the devcontainer.**
 `portsAttributes` carries labels and nothing more. Its `visibility` key was never
 implemented by GitHub, it is an open feature request, so declaring it there would
 read as a setting while doing nothing. The ports come up private on a fresh

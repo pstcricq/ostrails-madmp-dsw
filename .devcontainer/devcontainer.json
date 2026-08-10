@@ -16,8 +16,8 @@
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
   "features": {
     "ghcr.io/devcontainers/features/docker-in-docker:2": {},
-    // The image has no gh, and scripts/publish-ports.sh needs one to set port
-    // visibility. That is the only reason this is here.
+    // The image has no gh, and publish-ports.sh next to this file needs one to
+    // set port visibility. That is the only reason this is here.
     "ghcr.io/devcontainers/features/github-cli:1": {}
   },
 
@@ -30,9 +30,9 @@
   // stack listens, which is the one condition under which we saw a port stay
   // private while the call reported success.
   //
-  // scripts/publish-ports.sh sets visibility, from postStartCommand, on every
-  // start. Which port is public and why is written there and in the README, at
-  // the place that enforces it.
+  // publish-ports.sh, next to this file, sets visibility from postStartCommand
+  // on every start. Which port is public and why is written there and in the
+  // README, at the place that enforces it.
   "portsAttributes": {
     "8080": { "label": "DSW client" },
     "3000": { "label": "DSW server API" },
@@ -65,5 +65,5 @@
   // set the ports public by hand at every wake-up. publish-ports.sh does that
   // now, and a reminder for a step nobody performs is noise on every single
   // connection.
-  "postStartCommand": "docker compose up -d && bash scripts/publish-ports.sh"
+  "postStartCommand": "docker compose up -d && bash .devcontainer/publish-ports.sh"
 }

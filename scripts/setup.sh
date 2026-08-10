@@ -166,10 +166,11 @@ curl -fs -o /dev/null "$API/configs/bootstrap" || {
 
 notes=""
 
-# Nothing about port visibility here on purpose. scripts/publish-ports.sh owns
-# it, called from postStartCommand, so it runs at creation and at every wake-up
-# where this script only runs once. The order is what makes it safe: the demo
-# accounts below are gone before any port becomes public.
+# Nothing about port visibility here on purpose. It belongs to Codespaces alone,
+# so it lives in .devcontainer/publish-ports.sh, called from postStartCommand.
+# That way it runs at creation and at every wake-up, where this script only runs
+# once, and this file stays usable on any host. The order is what makes it safe:
+# the demo accounts below are gone before any port becomes public.
 
 # --- 7. Your admin account --------------------------------------------------
 # DSW seeds three demo accounts whose addresses and password are published. On a
