@@ -6,7 +6,7 @@
 #
 #   1. .env            copied from the example if absent
 #   2. the three URLs  computed from where we are
-#   3. four secrets    generated if still empty, before the first `up`
+#   3. five secrets    generated if still empty, before the first `up`
 #   4. the stack       docker compose up -d
 #   5. the bucket      DSW does not create its own
 #   6. the admin       your own account, replacing the seeded demo ones
@@ -33,10 +33,22 @@ DEMO_ACCOUNTS="albert.einstein@example.com isaac.newton@example.com nikola.tesla
 # Value of a key in .env, empty when unset or empty. Only for single-line keys.
 env_get() { sed -n "s/^$1=//p" .env | head -1 | tr -d '"'; }
 
-# Replaces a single-line key in place. `|` as the delimiter because values here
-# are URLs and hex strings, never a pipe. The .bak dance keeps GNU and BSD sed
-# both happy.
-env_set() { sed -i.bak "s|^$1=.*|$1=$2|" .env && rm -f .env.bak; }
+# Sets a single-line key, adding it when the file does not have it yet. `|` as
+# the delimiter because values here are URLs and hex strings, never a pipe. The
+# .bak dance keeps GNU and BSD sed both happy.
+#
+# (!!) The append branch is not a nicety. sed substitutes, so on a key the file
+# does not carry it matched nothing, changed nothing and returned success, and
+# the caller went on to announce a value it had not written. That is the state
+# of every .env created before .env.example grew a key, which is to say every
+# .env eventually.
+env_set() {
+  if grep -q "^$1=" .env; then
+    sed -i.bak "s|^$1=.*|$1=$2|" .env && rm -f .env.bak
+  else
+    printf '%s=%s\n' "$1" "$2" >> .env
+  fi
+}
 
 # Everything below stays in the shell on purpose. The Codespace base image has
 # curl, sed and openssl but no python3, and a bootstrap script that needs a
@@ -80,6 +92,35 @@ if [ ! -f .env ]; then
   chmod 600 .env
   echo "Created .env from .env.example."
 fi
+
+# Keys .env.example has gained since this .env was created, copied with the
+# example's own value: empty for anything step 3 generates, the documented
+# default for the rest. This can only ever add. A value already in .env is never
+# touched, and a key .env holds on its own is never removed.
+#
+# It exists because .env is copied once and then the two files diverge forever.
+# Without this, a key added to the example is invisible to every deployment
+# already running, and the failure is silent rather than loud: compose passes the
+# variable as an empty string, so code reading os.environ.get(name, default) gets
+# "" and never its default, the variable being set, just empty.
+#
+# On a .env created a moment ago there is nothing to add, which is the point.
+added=""
+while IFS= read -r line; do
+  case "$line" in
+    ''|'#'*) continue ;;   # blank line or comment
+    *=*) ;;                # KEY=value
+    *) continue ;;         # anything else, including the example's key block
+  esac
+  key="${line%%=*}"
+  # Multi-line, and step 3 appends it whole. Copying the empty placeholder would
+  # leave a second declaration sitting after the real key.
+  if [ "$key" != GENERAL_RSA_PRIVATE_KEY ] && ! grep -q "^$key=" .env; then
+    printf '%s\n' "$line" >> .env
+    added="$added $key"
+  fi
+done < .env.example
+[ -z "$added" ] || echo "Added from .env.example:$added"
 
 # --- 2. Where are we? -------------------------------------------------------
 # The three URLs are the only values that depend on where the stack runs,
@@ -132,6 +173,21 @@ done
 if [ -z "$(env_get GENERAL_SECRET)" ]; then
   env_set GENERAL_SECRET "$(openssl rand -hex 16)"
   generated="$generated GENERAL_SECRET"
+fi
+
+# The webhook's shared secret, and the one value the shell may legitimately
+# provide instead of .env: a Codespaces Secret of this name reaches the
+# container directly, because compose lets the environment win over .env.
+#
+# (!!) Which is why this checks the environment first. Writing a second value
+# here would be worse than writing none: `grep SUBMISSION_TOKEN .env` would show
+# a token the container never sees, DSW would be configured from it, and every
+# submission would come back 401 with nothing naming the cause.
+if [ -n "${SUBMISSION_TOKEN:-}" ]; then
+  echo "SUBMISSION_TOKEN comes from the environment, .env left alone."
+elif [ -z "$(env_get SUBMISSION_TOKEN)" ]; then
+  env_set SUBMISSION_TOKEN "$(openssl rand -hex 24)"
+  generated="$generated SUBMISSION_TOKEN"
 fi
 
 # The RSA key is the one multi-line value, which docker compose accepts between

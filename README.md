@@ -80,10 +80,19 @@ Values fall into four groups, and `.env.example` says which is which:
   are the only values that depend on the machine, because they are what the
   *browser* resolves
 - **generated** by `setup.sh`, once, and never regenerated: the two
-  infrastructure passwords and the two DSW signing secrets. Every empty value in
-  `.env.example` is one of these
-- **secrets**, read from the environment and never stored here:
-  `DSW_ADMIN_EMAIL` and `DSW_ADMIN_PASSWORD`
+  infrastructure passwords, the two DSW signing secrets, and the webhook's
+  `SUBMISSION_TOKEN`
+- **brought from outside**, because no script can invent them:
+  `REGISTRY_TOKEN`, a GitHub PAT you create, and `DSW_ADMIN_EMAIL` /
+  `DSW_ADMIN_PASSWORD`. Locally they go in `.env`, which is gitignored. In a
+  Codespace they are repository Secrets and reach the containers through the
+  environment without ever touching `.env`, because compose lets the environment
+  win over that file
+
+`setup.sh` reconciles `.env` with `.env.example` on every run, adding a key the
+example has gained and leaving every existing value alone. Without that, a
+deployment created before the key existed would never see it, and compose would
+pass an empty string rather than the documented default.
 
 To read a generated value back:
 
