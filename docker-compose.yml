@@ -60,11 +60,6 @@ services:
       # has to be an address the *user's* machine resolves, never a compose
       # service name. A Codespace needs the forwarded URL.
       API_URL: ${API_URL}
-    volumes:
-      # The image's nginx config with two lines changed, so that opening the
-      # bare origin lands on /wizard/ instead of an http:// redirect that a
-      # TLS-terminated host cannot serve. The file's header says what and why.
-      - ./nginx-client.conf:/etc/nginx/conf.d/default.conf:ro
 
   docworker:
     image: datastewardshipwizard/document-worker:${DSW_VERSION}

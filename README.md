@@ -6,7 +6,7 @@ at in a browser.
 
 It starts from the [official deployment
 example](https://github.com/ds-wizard/dsw-deployment-example) at its 4.31
-release, kept as the `upstream` remote, and is reduced to nine files.
+release, kept as the `upstream` remote, and is reduced to eight files.
 
 ## Quick start
 
@@ -27,12 +27,19 @@ forwarded domain instead of localhost.
 | API | http://localhost:3000/wizard-api |
 | MinIO console | http://localhost:9001 |
 
+**Enter through `/wizard`, not through the bare origin.** The client image
+redirects `/` to an absolute `http://` address built from the protocol nginx
+itself listens on, so behind a TLS terminator the browser is sent to `http` on a
+host that only serves `https`. That is what makes the PORTS panel link fail in a
+Codespace, where the tunnel is the terminator and is not ours to configure.
+Behind your own reverse proxy the fix belongs there, with `proxy_redirect
+http:// https://` or a root redirect of its own.
+
 ## What is in here
 
 | File | Role |
 |---|---|
 | `docker-compose.yml` | the five services, plus a one-shot bucket creator |
-| `nginx-client.conf` | the client's own nginx config, two lines changed |
 | `.env.example` | every value the stack reads, with its defaults documented |
 | `scripts/setup.sh` | from nothing to a running stack, in one command |
 | `scripts/publish-ports.sh` | makes 3000 and 9000 public, at every start |
@@ -158,10 +165,6 @@ that account is created only once, at the first `initdb`.
 - Postgres is not published, and MinIO is bound to the loopback
 - the bucket is created by a compose service under a profile, replacing a script
   that guessed its network and asked for an `mc` image tag that does not exist
-- the client's nginx config is mounted with two lines changed, so that opening
-  the bare origin reaches the application. The image redirects to an absolute
-  `http://` URL built from the protocol it listens on, which breaks behind any
-  TLS terminator, a Codespaces forwarded port included
 - the mailer is commented out, having nothing to process while mail is disabled
 - upstream's `.github` is removed, those workflows monitor DSW's own images
 
