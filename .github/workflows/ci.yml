@@ -1,0 +1,42 @@
+# One job, three checks, on the only code this repository holds: the submission
+# webhook under submission/. Everything else here is declarative, a compose file
+# and an .env example, and nothing in CI can tell whether a deployment is
+# correct without deploying it.
+#
+# It installs with `uv sync --frozen`: the committed lockfile decides the
+# versions, so a transitive release cannot turn CI red on its own.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel a superseded run rather than queue it. Nothing here writes anywhere,
+# these are pure checks, so the only cost of stopping one is the seconds it had
+# already spent. madmp-core queues instead, because its last jobs act on the
+# registry and killing one mid-flight would leave it half registered.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install the locked environment
+        run: uv sync --frozen
+      - name: Lint
+        run: uv run ruff check .
+      # --check reports, never rewrites: CI states the verdict, `ruff format`
+      # locally does the fixing.
+      - name: Format
+        run: uv run ruff format --check .
+      - name: Unit tests
+        run: uv run pytest tests/ -q
