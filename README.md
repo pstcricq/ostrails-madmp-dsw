@@ -6,7 +6,7 @@ at in a browser.
 
 It starts from the [official deployment
 example](https://github.com/ds-wizard/dsw-deployment-example) at its 4.31
-release, kept as the `upstream` remote, and is reduced to eight files.
+release, kept as the `upstream` remote, and is reduced to nine files.
 
 ## Quick start
 
@@ -32,6 +32,7 @@ forwarded domain instead of localhost.
 | File | Role |
 |---|---|
 | `docker-compose.yml` | the five services, plus a one-shot bucket creator |
+| `nginx-client.conf` | the client's own nginx config, two lines changed |
 | `.env.example` | every value the stack reads, with its defaults documented |
 | `scripts/setup.sh` | from nothing to a running stack, in one command |
 | `scripts/publish-ports.sh` | makes 3000 and 9000 public, at every start |
@@ -157,6 +158,10 @@ that account is created only once, at the first `initdb`.
 - Postgres is not published, and MinIO is bound to the loopback
 - the bucket is created by a compose service under a profile, replacing a script
   that guessed its network and asked for an `mc` image tag that does not exist
+- the client's nginx config is mounted with two lines changed, so that opening
+  the bare origin reaches the application. The image redirects to an absolute
+  `http://` URL built from the protocol it listens on, which breaks behind any
+  TLS terminator, a Codespaces forwarded port included
 - the mailer is commented out, having nothing to process while mail is disabled
 - upstream's `.github` is removed, those workflows monitor DSW's own images
 
