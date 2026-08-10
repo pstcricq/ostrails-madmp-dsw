@@ -31,7 +31,6 @@ x-dsw-config: &dsw-config
   S3_BUCKET: ${S3_BUCKET}
 
 services:
-
   # server and docworker get the same block, which is what mounting one shared
   # application.yml into both used to do.
   server:
@@ -39,7 +38,7 @@ services:
     platform: linux/amd64
     restart: always
     ports:
-    # (!!) Expose only for local deployment, externally use HTTPS proxy
+      # (!!) Expose only for local deployment, externally use HTTPS proxy
       - 127.0.0.1:3000:3000
     depends_on:
       - postgres
@@ -52,7 +51,7 @@ services:
     image: datastewardshipwizard/wizard-client:${DSW_VERSION}
     restart: always
     ports:
-    # (!!) Expose only for local deployment, externally use HTTPS proxy
+      # (!!) Expose only for local deployment, externally use HTTPS proxy
       - 127.0.0.1:8080:8080
     environment:
       # Not a DSW config path, this one is the client image's own variable. The
@@ -99,6 +98,25 @@ services:
   #   environment:
   #     <<: *dsw-config
   #     APPLICATION_CONFIG_PATH: /dev/null   # same requirement as docworker
+
+  # maDMP submission webhook (DSW Submit -> dmp-registry on GitHub). Source in
+  # ./submission. DSW reaches it by service name on the compose network
+  # (http://submission:8080), so it needs no published port.
+  #
+  # The four variables are listed one by one rather than `env_file: .env`:
+  # they are the whole contract with the webhook, and it has no business
+  # holding the Postgres and MinIO passwords that sit next to them in .env.
+  submission:
+    build: ./submission
+    restart: always
+    environment:
+      SUBMISSION_TOKEN: ${SUBMISSION_TOKEN}
+      REGISTRY_TOKEN: ${REGISTRY_TOKEN}
+      REGISTRY_OWNER: ${REGISTRY_OWNER}
+      REGISTRY_REPO: ${REGISTRY_REPO}
+    # No host port needed. Uncomment to poke it from the terminal for debugging.
+    # ports:
+    #   - 127.0.0.1:8085:8080
 
   postgres:
     image: postgres:${POSTGRES_VERSION}

@@ -1,0 +1,53 @@
+# This repo is a deployment, not a distributable package — `package = false`
+# below keeps uv from ever trying to build it. The file is here so that one
+# declaration covers both the webhook's dependencies and the pytest config:
+#
+#     uv run pytest -q
+#
+# creates the environment and runs the tests, with no requirements.txt and no
+# pytest.ini alongside it.
+
+[project]
+name = "madmp-dsw"
+version = "0"
+description = "DSW deployment + the maDMP submission webhook (DSW Submit -> dmp-registry)"
+requires-python = ">=3.12"
+# The webhook's runtime dependencies. submission/Dockerfile installs these
+# same three by name: the image deliberately carries no uv and no build step,
+# so keep the two lists in step when adding one.
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "python-multipart",  # DSW may POST the document as a multipart upload
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "httpx",  # FastAPI TestClient
+    "ruff",   # lint and format, the same two checks CI runs
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+# The webhook's modules are flat (app.py, service.py, github_client.py) —
+# that is how they are laid out in the image, so the tests import them the
+# same way.
+pythonpath = ["submission"]
+testpaths = ["tests"]
+# Caches go inside .venv rather than at the root: they are as disposable as the
+# environment itself, and one ignored directory beats three. Same convention as
+# madmp-core.
+cache_dir = ".venv/.pytest_cache"
+
+[tool.ruff]
+target-version = "py312"
+cache-dir = ".venv/.ruff_cache"
+
+# No `select`: ruff's own default rule set, which already covers pyflakes,
+# pycodestyle errors, import order (I), pyupgrade (UP) and bugbear (B). The
+# webhook passed it with two import-order fixes and nothing else, so narrowing
+# it would mean claiming to know better than the tool on code that already
+# clears it.

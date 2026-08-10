@@ -5,5 +5,11 @@
 # Editor settings, personal to whoever opens the folder
 .vscode/
 
+# Python, for the submission webhook and its tests
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
 # OS junk
 .DS_Store
