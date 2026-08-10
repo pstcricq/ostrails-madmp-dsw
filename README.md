@@ -6,7 +6,9 @@ at in a browser.
 
 It starts from the [official deployment
 example](https://github.com/ds-wizard/dsw-deployment-example) at its 4.31
-release, kept as the `upstream` remote, and is reduced to eight files.
+release, kept as the `upstream` remote, cut down to the few files a deployment
+needs, and it carries one piece of code of its own: the **submission webhook**
+that commits a rendered DMP into the `dmp-registry` repository.
 
 ## Quick start
 
@@ -43,9 +45,13 @@ the stack runs.
 
 | File | Role |
 |---|---|
-| `docker-compose.yml` | the five services, plus a one-shot bucket creator |
+| `docker-compose.yml` | the six services, plus a one-shot bucket creator |
 | `.env.example` | every value the stack reads, with its defaults documented |
 | `scripts/setup.sh` | from nothing to a running stack, in one command |
+| `submission/` | the webhook: FastAPI wiring, its logic, a GitHub client |
+| `tests/` | the webhook's unit tests |
+| `pyproject.toml`, `uv.lock` | one uv environment for the webhook and its tests |
+| `.github/workflows/ci.yml` | lint, format and unit tests, on every push |
 | `.devcontainer/devcontainer.json` | the Codespace: ports, lifecycle |
 | `.devcontainer/publish-ports.sh` | makes 3000 and 9000 public, at every start |
 
@@ -94,6 +100,7 @@ grep MINIO_ROOT_PASSWORD .env
 | 9000 | MinIO S3 API | **public** |
 | 9001 | MinIO console | not forwarded |
 | 5432 | Postgres | not published at all |
+| 8080 | submission webhook | not published either, DSW reaches it by service name |
 
 The split is not a preference. A private port works for a page you navigate to,
 because the browser sends its GitHub cookie on a first-party navigation. That
@@ -136,6 +143,42 @@ password hash, so no input opens it, and DSW uses it internally.
 
 Since the demo account is gone, publishing from CI needs `DSW_EMAIL` and
 `DSW_PASSWORD` rather than relying on the defaults in `dsw/publish.py`.
+
+## The submission webhook
+
+DSW's Submit feature POSTs a rendered DMP to
+`http://submission:8080/submissions?project=<folder>`, on the compose network, so
+the service needs no published port. The webhook commits the document into
+`projects/<folder>/template/` of the `dmp-registry` repository and rewrites its
+`dmp_id`, a DSW placeholder until then, to that file's stable raw URL.
+
+It creates nothing. A folder with no `meta.yaml` is refused rather than half
+built, because that file carries the identity and the rules pins the quality
+checks read, and it is laid out beforehand from madmp-core.
+
+Four variables, all in `.env`, and they are the whole contract:
+
+| | |
+|---|---|
+| `SUBMISSION_TOKEN` | shared secret DSW sends as `Authorization: Bearer …` |
+| `REGISTRY_TOKEN` | fine-grained PAT, Contents RW on the registry repo |
+| `REGISTRY_OWNER`, `REGISTRY_REPO` | where the registry lives |
+
+`REGISTRY_` rather than `GITHUB_`, because compose lets the shell win over
+`.env` and a developer's shell very often already holds a `GITHUB_TOKEN`. A
+collision there would commit with the wrong credentials, silently.
+
+Working on it:
+
+```bash
+uv run pytest -q
+uv run ruff check .
+uv run ruff format .
+```
+
+CI runs those same three on every push, and nothing else: the rest of this
+repository is declarative, and no job can tell whether a deployment is correct
+without deploying it.
 
 ## Everyday commands
 
