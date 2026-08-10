@@ -166,25 +166,10 @@ curl -fs -o /dev/null "$API/configs/bootstrap" || {
 
 notes=""
 
-# Port visibility stays a manual step, deliberately. devcontainer.json declares
-# 3000 and 9000 public and it has never once worked, on two fresh codespaces or
-# on a wake-up: the declaration is applied as the container starts, before
-# anything listens on either port. Automating it from here was tried and dropped
-# for two reasons found by testing rather than guessed. The image carries no
-# `gh`, and `gh codespace ports visibility 9000:public` destroys that port's
-# tunnel every time, leaving it answering 404 until it is forwarded again.
-#
-# The PORTS panel does both correctly, so that is what this points at. The same
-# reminder is in postAttachCommand, because visibility resets on every wake-up
-# and this script only runs at creation.
-if [ -n "${CODESPACE_NAME:-}" ]; then
-  notes="$notes
- (i) Check the PORTS panel in VS Code. 3000 has to be public or the client
-     cannot reach the API, and neither can a GitHub Actions runner. 9000 too if
-     you want to download generated documents. Right click a port, then Port
-     Visibility. devcontainer.json asks for this, but the request never takes
-     effect, and the ports come back private after every wake-up."
-fi
+# Nothing about port visibility here on purpose. scripts/publish-ports.sh owns
+# it, called from postStartCommand, so it runs at creation and at every wake-up
+# where this script only runs once. The order is what makes it safe: the demo
+# accounts below are gone before any port becomes public.
 
 # --- 7. Your admin account --------------------------------------------------
 # DSW seeds three demo accounts whose addresses and password are published. On a
