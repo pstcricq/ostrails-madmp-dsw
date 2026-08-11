@@ -1,15 +1,20 @@
 # Holds the deployment's credentials, and its values differ on every machine.
-# .env.example is the versioned one.
+# .env.example is the versioned one. The second pattern covers every other local
+# variant.
 .env
+.env.*
+!.env.example
 
 # Editor settings, personal to whoever opens the folder
 .vscode/
 
-# Python, for the submission webhook and its tests
+# Python, for the submission webhook and its tests. Both caches are configured
+# to sit inside .venv, these lines catch the ones written from elsewhere.
 .venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+.ruff_cache/
 
 # OS junk
 .DS_Store

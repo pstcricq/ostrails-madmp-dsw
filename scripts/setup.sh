@@ -1,317 +1,141 @@
 #!/usr/bin/env bash
-# Brings the DSW stack up from nothing, in one command, locally or in a
-# Codespace. The same file runs in both, which is the point: running it on a
-# laptop is a real rehearsal of what a Codespace does, rather than a second code
-# path that only the cloud ever executes.
+# Brings the DSW stack up and reports what it runs with. It writes nothing: .env
+# is filled by hand, so this reads it, states what compose will resolve, then
+# runs the two commands a deployment needs:
 #
-#   1. .env            copied from the example if absent
-#   2. the three URLs  computed from where we are
-#   3. five secrets    generated if still empty, before the first `up`
-#   4. the stack       docker compose up -d
-#   5. the bucket      DSW does not create its own
-#   6. the admin       your own account, replacing the seeded demo ones
+#   docker compose up -d --wait
+#   docker compose run --rm createbucket
 #
-# Idempotent throughout. A secret already in .env is never regenerated, which
-# matters more than it looks: the Postgres account is created once at the first
-# initdb, and a new RSA key would invalidate every token already issued. The
-# three URLs are the exception, recomputed on every run, because they say where
-# the stack is reached from and that changes with the machine.
+# Both can be repeated, so this script can too.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# The stack is always reached through the published port, even in a Codespace
-# where the browser uses the forwarded URL. The script runs on the host.
+# Reached through the published port, which is bound to the loopback. This
+# script runs on the host, so this address holds even where the browser uses a
+# different one.
 API="http://127.0.0.1:3000/wizard-api"
 DEMO_EMAIL="albert.einstein@example.com"
 DEMO_PASSWORD="password"
-# Seeded by DSW and safe to remove. system@example.com is NOT in this list: it
-# is the account DSW uses for its own internal operations.
-DEMO_ACCOUNTS="albert.einstein@example.com isaac.newton@example.com nikola.tesla@example.com"
+
+# Printed with their value. None is a secret, and this is where a laptop URL
+# left in a server's .env becomes visible.
+SHOWN="DSW_VERSION POSTGRES_VERSION MINIO_VERSION MC_VERSION
+       POSTGRES_DB POSTGRES_USER MINIO_ROOT_USER
+       API_URL CLIENT_URL S3_URL S3_BUCKET
+       REGISTRY_OWNER REGISTRY_REPO"
+
+# Reported as set or MISSING, never printed.
+SECRET="POSTGRES_PASSWORD MINIO_ROOT_PASSWORD SUBMISSION_TOKEN REGISTRY_TOKEN
+        GENERAL_SECRET GENERAL_RSA_PRIVATE_KEY"
 
 # --- helpers ----------------------------------------------------------------
 
-# Value of a key in .env, empty when unset or empty. Only for single-line keys.
-env_get() { sed -n "s/^$1=//p" .env | head -1 | tr -d '"'; }
-
-# Sets a single-line key, adding it when the file does not have it yet. `|` as
-# the delimiter because values here are URLs and hex strings, never a pipe. The
-# .bak dance keeps GNU and BSD sed both happy.
-#
-# (!!) The append branch is not a nicety. sed substitutes, so on a key the file
-# does not carry it matched nothing, changed nothing and returned success, and
-# the caller went on to announce a value it had not written. That is the state
-# of every .env created before .env.example grew a key, which is to say every
-# .env eventually.
-env_set() {
-  if grep -q "^$1=" .env; then
-    sed -i.bak "s|^$1=.*|$1=$2|" .env && rm -f .env.bak
-  else
-    printf '%s=%s\n' "$1" "$2" >> .env
-  fi
+# The value compose will use. Its rule, not ours: the environment wins over
+# .env, so a name exported in the shell reaches the containers while .env still
+# shows something else. Reading .env alone would report a value the stack never
+# sees.
+value_of() {
+  if [ -n "${!1:-}" ]; then printf '%s' "${!1}"; return; fi
+  sed -n "s/^$1=//p" .env | head -1 | tr -d '"'
 }
 
-# Everything below stays in the shell on purpose. The Codespace base image has
-# curl, sed and openssl but no python3, and a bootstrap script that needs a
-# language runtime installed first is a bootstrap script that does not work.
-
-# Escapes a value for use inside a JSON string. Backslash first, then quote, so
-# the second substitution cannot re-escape what the first produced. This is what
-# stops a password holding a quote from breaking the request or injecting.
-json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
-
-# Logs in and prints a token, or prints nothing. A JWT is base64url, so it never
-# contains a quote and the field can be cut out with sed.
-#
-# (!!) Callers below test the exit status, and that only works because of
-# `pipefail` at the top. Without it the status would be sed's, which succeeds on
-# empty input, so a failed login would look like a successful one and the admin
-# account would never be created.
-login() {
-  curl -fsS -X POST "$API/tokens" -H 'Content-Type: application/json' \
-    -d "{\"email\":\"$(json_escape "$1")\",\"password\":\"$(json_escape "$2")\"}" 2>/dev/null \
-    | sed -n 's/.*"token":"\([^"]*\)".*/\1/p'
-}
-
-# Prints the uuid of the user at this exact address, or nothing. A user object
-# holds no nested object, so splitting the payload on `{` puts one user per
-# line, with its address and its uuid together on that line.
-user_uuid() {
-  curl -fsS "$API/users?q=$1" -H "Authorization: Bearer $2" \
-    | tr '{' '\n' \
-    | grep -F "\"email\":\"$1\"" \
-    | sed -n 's/.*"uuid":"\([0-9a-f-]\{36\}\)".*/\1/p' \
-    | head -1
+origin_of() {
+  if [ -n "${!1:-}" ]; then echo "environment"; else echo ".env"; fi
 }
 
 # --- 1. .env ----------------------------------------------------------------
-# Gitignored, so a fresh clone does not have one. A new Codespace is exactly
-# that, which is why this is created rather than demanded.
 if [ ! -f .env ]; then
-  [ -f .env.example ] || { echo "error: neither .env nor .env.example found" >&2; exit 1; }
-  cp .env.example .env
-  chmod 600 .env
-  echo "Created .env from .env.example."
+  echo "error: no .env here." >&2
+  echo "  cp .env.example .env, then fill in the empty values." >&2
+  exit 1
 fi
 
-# Keys .env.example has gained since this .env was created, copied with the
-# example's own value: empty for anything step 3 generates, the documented
-# default for the rest. This can only ever add. A value already in .env is never
-# touched, and a key .env holds on its own is never removed.
-#
-# It exists because .env is copied once and then the two files diverge forever.
-# Without this, a key added to the example is invisible to every deployment
-# already running, and the failure is silent rather than loud: compose passes the
-# variable as an empty string, so code reading os.environ.get(name, default) gets
-# "" and never its default, the variable being set, just empty.
-#
-# On a .env created a moment ago there is nothing to add, which is the point.
-added=""
-while IFS= read -r line; do
-  case "$line" in
-    ''|'#'*) continue ;;   # blank line or comment
-    *=*) ;;                # KEY=value
-    *) continue ;;         # anything else, including the example's key block
-  esac
-  key="${line%%=*}"
-  # Multi-line, and step 3 appends it whole. Copying the empty placeholder would
-  # leave a second declaration sitting after the real key.
-  if [ "$key" != GENERAL_RSA_PRIVATE_KEY ] && ! grep -q "^$key=" .env; then
-    printf '%s\n' "$line" >> .env
-    added="$added $key"
-  fi
-done < .env.example
-[ -z "$added" ] || echo "Added from .env.example:$added"
-
-# --- 2. Where are we? -------------------------------------------------------
-# The three URLs are the only values that depend on where the stack runs,
-# because they are what the *browser* resolves, and in a Codespace the browser
-# sits on another machine entirely.
-#
-# Three cases, and only one of them needs code. On a laptop the URLs are known
-# and fixed, .env.example ships them. On a server they are known too, so they
-# belong in .env, written once. A Codespace is the only place where they cannot
-# be known in advance, because GitHub draws the name at creation, so that is the
-# only case computed here. CODESPACE_NAME is set by GitHub and exists nowhere
-# else, which is what makes it the test.
-#
-# Anywhere else this reads .env rather than assuming, so a server deployment
-# needs nothing added below. Adding a third branch would give those URLs a
-# second home to drift from.
-if [ -n "${CODESPACE_NAME:-}" ]; then
-  DOMAIN="${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-app.github.dev}"
-  env_set API_URL    "https://${CODESPACE_NAME}-3000.${DOMAIN}/wizard-api"
-  env_set CLIENT_URL "https://${CODESPACE_NAME}-8080.${DOMAIN}/wizard"
-  # No path: S3_URL is a bare origin, presigned URLs append bucket and key.
-  env_set S3_URL     "https://${CODESPACE_NAME}-9000.${DOMAIN}"
-  echo "Codespace detected, the three URLs point at the forwarded domain."
-else
-  # Reported rather than assumed. This used to claim the URLs were on localhost,
-  # which is true on a laptop and false on any server, and it is the one place
-  # where a wrong URL would otherwise go unnoticed until the client fails.
-  echo "No Codespace detected, the three URLs are used as they stand in .env:"
-  echo "  client  $(env_get CLIENT_URL)"
-  echo "  api     $(env_get API_URL)"
-  echo "  s3      $(env_get S3_URL)"
+# --- 2. Can compose read it? ------------------------------------------------
+# One line, and it catches what a key-by-key report cannot: a multi-line value
+# left without its quotes makes compose read every following line as a new
+# variable, and no single key looks wrong.
+if ! docker compose config --quiet 2>/dev/null; then
+  echo "error: docker compose cannot read .env:" >&2
+  docker compose config --quiet 2>&1 | sed 's/^/  /' >&2
+  exit 1
 fi
 
-# --- 3. Secrets -------------------------------------------------------------
-# The four values .env.example ships empty. Filled here, before the first `up`,
-# and never touched again.
-generated=""
+# --- 3. What the stack will run with ----------------------------------------
+echo "Configuration:"
+missing=""
 
-# Lengths are not a matter of taste here. GENERAL_SECRET must be exactly 32
-# ASCII characters, which is 16 bytes in hex: the server refuses to start
-# otherwise, with "general.secret must have 32 ASCII characters". The two
-# passwords have no such constraint, so they get more.
-for key in POSTGRES_PASSWORD MINIO_ROOT_PASSWORD; do
-  if [ -z "$(env_get "$key")" ]; then
-    env_set "$key" "$(openssl rand -hex 24)"
-    generated="$generated $key"
+for key in $SHOWN; do
+  value="$(value_of "$key")"
+  if [ -z "$value" ]; then
+    missing="$missing $key"
+    printf '  %-24s %-40s %s\n' "$key" "MISSING" "-"
+  else
+    printf '  %-24s %-40s %s\n' "$key" "$value" "$(origin_of "$key")"
   fi
 done
 
-if [ -z "$(env_get GENERAL_SECRET)" ]; then
-  env_set GENERAL_SECRET "$(openssl rand -hex 16)"
-  generated="$generated GENERAL_SECRET"
-fi
+for key in $SECRET; do
+  if [ -z "$(value_of "$key")" ]; then
+    missing="$missing $key"
+    printf '  %-24s %-40s %s\n' "$key" "MISSING" "-"
+  else
+    printf '  %-24s %-40s %s\n' "$key" "set" "$(origin_of "$key")"
+  fi
+done
 
-# The webhook's shared secret, and the one value the shell may legitimately
-# provide instead of .env: a Codespaces Secret of this name reaches the
-# container directly, because compose lets the environment win over .env.
-#
-# (!!) Which is why this checks the environment first. Writing a second value
-# here would be worse than writing none: `grep SUBMISSION_TOKEN .env` would show
-# a token the container never sees, DSW would be configured from it, and every
-# submission would come back 401 with nothing naming the cause.
-if [ -n "${SUBMISSION_TOKEN:-}" ]; then
-  echo "SUBMISSION_TOKEN comes from the environment, .env left alone."
-elif [ -z "$(env_get SUBMISSION_TOKEN)" ]; then
-  env_set SUBMISSION_TOKEN "$(openssl rand -hex 24)"
-  generated="$generated SUBMISSION_TOKEN"
-fi
+# Keys .env.example has gained since this .env was written. Reported rather than
+# copied: a script has no business writing in a file of secrets, and the value
+# would have to be filled in by hand anyway.
+absent=""
+while IFS= read -r line; do
+  case "$line" in ''|'#'*) continue ;; *=*) ;; *) continue ;; esac
+  key="${line%%=*}"
+  grep -q "^$key=" .env || absent="$absent $key"
+done < .env.example
+[ -z "$absent" ] || {
+  echo ""
+  echo "(!) .env.example carries keys your .env does not:$absent"
+  echo "    Add them, with a value."
+}
 
-# The RSA key is the one multi-line value, which docker compose accepts between
-# double quotes. It is appended rather than substituted in place, which is why
-# .env.example keeps it as its last key.
-if ! grep -q '^GENERAL_RSA_PRIVATE_KEY="-----BEGIN' .env; then
-  # -traditional forces PKCS#1, the "BEGIN RSA PRIVATE KEY" form DSW expects.
-  # OpenSSL 3 writes PKCS#8 without it. LibreSSL, which is what stock macOS
-  # ships, does not know the flag but already writes PKCS#1, hence the fallback
-  # and the check that follows: a silently wrong format would only surface much
-  # later, as a server that refuses to start.
-  key="$(openssl genrsa -traditional 4096 2>/dev/null || openssl genrsa 4096 2>/dev/null)"
-  case "$key" in
-    "-----BEGIN RSA PRIVATE KEY-----"*) ;;
-    *) echo "error: openssl produced a key that is not PKCS#1, DSW will reject it" >&2; exit 1 ;;
-  esac
-  sed -i.bak '/^GENERAL_RSA_PRIVATE_KEY=/d' .env && rm -f .env.bak
-  printf 'GENERAL_RSA_PRIVATE_KEY="%s"\n' "$key" >> .env
-  generated="$generated GENERAL_RSA_PRIVATE_KEY"
+if [ -n "$missing" ]; then
+  echo ""
+  echo "error: nothing can start until these are set in .env:$missing" >&2
+  exit 1
 fi
-
-[ -z "$generated" ] || echo "Generated:$generated"
 
 # --- 4. The stack -----------------------------------------------------------
+# --wait returns once every healthcheck passes, not once the containers exist,
+# so nothing below has to poll the API.
+echo ""
 echo "Starting the stack..."
-docker compose up -d
-
-# --- 5. The bucket ----------------------------------------------------------
-# DSW does not create it: in the S3 API, CreateBucket and PutObject are separate
-# operations, and writing to a missing bucket returns NoSuchBucket. The service
-# waits on MinIO's healthcheck by itself, so there is no sleep here.
-docker compose run --rm createbucket
-
-# --- 6. Wait for the API ----------------------------------------------------
-# `up -d` returns once the containers are created, not once they answer. The
-# first boot also runs database migrations, which take a while under emulation.
-printf 'Waiting for the DSW API'
-for _ in $(seq 1 120); do
-  if curl -fs -o /dev/null "$API/configs/bootstrap"; then echo " ready."; break; fi
-  printf '.'
-  sleep 2
-done
-curl -fs -o /dev/null "$API/configs/bootstrap" || {
-  echo ""
-  echo "error: the API did not answer, check 'docker compose logs server'" >&2
+docker compose up -d --wait || {
+  echo "error: the stack did not come up, check 'docker compose logs'" >&2
   exit 1
 }
 
-notes=""
+# --- 5. The bucket ----------------------------------------------------------
+# DSW does not create it: in the S3 API, CreateBucket and PutObject are separate
+# operations, and writing to a missing bucket returns NoSuchBucket. Repeating it
+# is free, `mc mb --ignore-existing` says so.
+docker compose run --rm createbucket
 
-# Nothing about port visibility here on purpose. It belongs to Codespaces alone,
-# so it lives in .devcontainer/publish-ports.sh, called from postStartCommand.
-# That way it runs at creation and at every wake-up, where this script only runs
-# once, and this file stays usable on any host. The order is what makes it safe:
-# the demo accounts below are gone before any port becomes public.
-
-# --- 7. Your admin account --------------------------------------------------
-# DSW seeds three demo accounts whose addresses and password are published. The
-# moment this instance is reachable by anyone else, a Codespace with port 3000
-# public or a server behind a proxy, those accounts are its whole security.
-#
-# The order matters and is not negotiable: create yours, prove it logs in, and
-# only then delete the seeded ones. The reverse locks you out of your own
-# instance with no way back but psql.
-if [ -z "${DSW_ADMIN_EMAIL:-}" ] || [ -z "${DSW_ADMIN_PASSWORD:-}" ]; then
-  # Only warn if the demo account really answers. Once it has been removed by an
-  # earlier run, saying the instance is wide open would be plainly false, and a
-  # security warning that cries wolf is worse than none.
-  if login "$DEMO_EMAIL" "$DEMO_PASSWORD" > /dev/null 2>&1; then
-    notes="$notes
- (!) DSW_ADMIN_EMAIL / DSW_ADMIN_PASSWORD are not set, so the demo accounts
-     were left alone. These credentials open this instance:
-         $DEMO_EMAIL / $DEMO_PASSWORD
-     That costs nothing while it is only bound to the loopback. Export the two
-     variables, or set them as repository Codespaces Secrets, before this
-     instance is reachable from anywhere else."
-  fi
-elif login "$DSW_ADMIN_EMAIL" "$DSW_ADMIN_PASSWORD" > /dev/null 2>&1; then
-  echo "Admin account $DSW_ADMIN_EMAIL already in place."
-else
-  TOKEN="$(login "$DEMO_EMAIL" "$DEMO_PASSWORD" || true)"
-  if [ -z "$TOKEN" ]; then
-    notes="$notes
- (!) Neither $DSW_ADMIN_EMAIL nor the demo account could log in. The admin
-     account was left untouched."
-  else
-    echo "Creating admin account $DSW_ADMIN_EMAIL..."
-    curl -fsS -X POST "$API/users" \
-      -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-      -d "{\"email\":\"$(json_escape "$DSW_ADMIN_EMAIL")\",\"firstName\":\"DSW\",\"lastName\":\"Admin\",\"password\":\"$(json_escape "$DSW_ADMIN_PASSWORD")\",\"role\":\"admin\",\"affiliation\":null}" > /dev/null
-
-    # The proof, not the assumption.
-    NEW_TOKEN="$(login "$DSW_ADMIN_EMAIL" "$DSW_ADMIN_PASSWORD" || true)"
-    if [ -z "$NEW_TOKEN" ]; then
-      notes="$notes
- (!) The new admin account was created but cannot log in, so the demo accounts
-     were kept. Look into it before exposing this instance."
-    else
-      for email in $DEMO_ACCOUNTS; do
-        # `|| true` is not decoration. user_uuid ends on a grep that exits 1 when
-        # the account is already gone, pipefail carries that out of the pipeline,
-        # and set -e would end the script right here, after the admin was created
-        # and before anything was printed.
-        uuid="$(user_uuid "$email" "$NEW_TOKEN" || true)"
-        [ -z "$uuid" ] || curl -fsS -X DELETE "$API/users/$uuid" \
-          -H "Authorization: Bearer $NEW_TOKEN" > /dev/null
-      done
-      echo "Demo accounts removed, $DSW_ADMIN_EMAIL is the only admin."
-    fi
-  fi
-fi
-
-# --- 8. Summary -------------------------------------------------------------
+# --- 6. Summary -------------------------------------------------------------
 echo ""
 echo "======================================================================"
 echo " DSW is up."
-echo " Client : $(env_get CLIENT_URL)"
-echo " API    : $(env_get API_URL)"
-[ -z "$notes" ] || echo "$notes"
-echo ""
-echo " Credentials live in .env and nowhere else. Read one with, for example:"
-echo "   grep MINIO_ROOT_PASSWORD .env"
-echo ""
-echo " Re-running this script is safe. Deleting .env to get fresh secrets is"
-echo " not: the Postgres account is created once, so that needs a"
-echo " 'docker compose down -v' first."
+echo " Client : $(value_of CLIENT_URL)"
+echo " API    : $(value_of API_URL)"
+
+# Only warned about when the account really answers, so the message means
+# something. DSW seeds three of them and their password is published.
+if curl -fs -o /dev/null -X POST "$API/tokens" -H 'Content-Type: application/json' \
+     -d "{\"email\":\"$DEMO_EMAIL\",\"password\":\"$DEMO_PASSWORD\"}" 2>/dev/null; then
+  echo ""
+  echo " (!) The seeded demo accounts still open this instance:"
+  echo "         $DEMO_EMAIL / $DEMO_PASSWORD"
+  echo "     Create your own admin and delete these three before this instance"
+  echo "     is reachable from anywhere but this machine."
+fi
+
 echo "======================================================================"
