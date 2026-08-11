@@ -1,15 +1,10 @@
 """Thin GitHub Contents API client: the two calls the webhook needs.
 
-Deliberately synchronous and stdlib-only (the webhook serves one DSW
-instance, not traffic): FastAPI runs sync endpoints in a thread pool, so
-blocking I/O here is fine. Kept as its own class so tests can swap in a
-fake with the same two methods.
+Synchronous and stdlib-only. The blocking call is the reason app.py hands
+handle_submission to a thread pool rather than awaiting it: run from the event
+loop, the wait below would freeze the whole process, /health included.
 
-madmp-core carries its own copy of this file (`registry/github.py`). That is
-deliberate: the two repositories share the
-registry *layout* — documented in dmp-registry's README — not this code.
-It is a generic HTTP wrapper with no knowledge of DMPs, so the copies
-cannot drift in meaning.
+Kept as its own class so tests can swap in a fake with the same two methods.
 """
 
 from __future__ import annotations
@@ -22,11 +17,15 @@ from typing import Any
 
 
 class GitHubError(RuntimeError):
-    """GitHub rejected a call the webhook cannot recover from."""
+    """GitHub rejected a call, or could not be reached at all.
 
-    def __init__(self, status: int, message: str):
+    `status` is the HTTP status, or None when nothing was ever answered.
+    """
+
+    def __init__(self, status: int | None, message: str):
         self.status = status
-        super().__init__(f"GitHub API error {status}: {message}")
+        prefix = f"GitHub API error {status}" if status else "GitHub unreachable"
+        super().__init__(f"{prefix}: {message}")
 
 
 class GitHubClient:
@@ -36,7 +35,17 @@ class GitHubClient:
 
     def _request(
         self, method: str, path: str, body: dict[str, Any] | None = None
-    ) -> tuple[int, Any]:
+    ) -> Any:
+        """The decoded response body, or None when there is none.
+
+        (!!) Every error status raises, 404 included. A 404 means "no such
+        file" on a GET and "the write did not happen" on a PUT, and only the
+        caller knows which, so the distinction is not made here.
+
+        Failing to reach GitHub raises the same error, without a status, so a
+        caller has one exception to handle rather than two. 30 seconds is the
+        longest a submission can hang on this.
+        """
         request = urllib.request.Request(
             self.api_url + path,
             data=json.dumps(body).encode() if body is not None else None,
@@ -50,16 +59,27 @@ class GitHubClient:
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
                 payload = response.read()
-                return response.status, json.loads(payload) if payload else None
+                return json.loads(payload) if payload else None
         except urllib.error.HTTPError as e:
-            if e.code == 404:
-                return 404, None
             raise GitHubError(e.code, e.read().decode()) from e
+        # HTTPError first, it is a subclass of both. This one catches what never
+        # became a response: DNS failure, refused connection, timeout.
+        except OSError as e:
+            raise GitHubError(None, str(e)) from e
 
     def get_file(self, owner: str, repo: str, path: str) -> dict[str, Any] | None:
-        """The file's contents entry ({sha, content base64, ...}), or None."""
-        status, data = self._request("GET", f"/repos/{owner}/{repo}/contents/{path}")
-        return data if status != 404 else None
+        """The file's contents entry ({sha, content base64, ...}), or None.
+
+        The one place a 404 reads as an absence. GitHub answers 404 for a
+        repository the token cannot see too, so None means "not there, or not
+        visible with this token".
+        """
+        try:
+            return self._request("GET", f"/repos/{owner}/{repo}/contents/{path}")
+        except GitHubError as e:
+            if e.status == 404:
+                return None
+            raise
 
     def put_file(
         self,
@@ -77,5 +97,4 @@ class GitHubClient:
         }
         if sha:
             body["sha"] = sha
-        _, data = self._request("PUT", f"/repos/{owner}/{repo}/contents/{path}", body)
-        return data
+        return self._request("PUT", f"/repos/{owner}/{repo}/contents/{path}", body)
