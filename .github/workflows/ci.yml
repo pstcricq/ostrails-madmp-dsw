@@ -1,7 +1,6 @@
-# One job, three checks, on the only code this repository holds: the submission
-# webhook under submission/. Everything else here is declarative, a compose file
-# and an .env example, and nothing in CI can tell whether a deployment is
-# correct without deploying it.
+# One job over what this repository can check without deploying: the webhook's
+# code, and whether the deployment files parse and resolve. Whether a deployment
+# is *correct* only shows on a real host, and nothing here pretends otherwise.
 #
 # It installs with `uv sync --frozen`: the committed lockfile decides the
 # versions, so a transitive release cannot turn CI red on its own.
@@ -13,10 +12,13 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Cancel a superseded run rather than queue it. Nothing here writes anywhere,
-# these are pure checks, so the only cost of stopping one is the seconds it had
-# already spent. madmp-core queues instead, because its last jobs act on the
-# registry and killing one mid-flight would leave it half registered.
+# These are pure checks, nothing here writes anywhere, so the token gets the
+# least it can hold.
+permissions:
+  contents: read
+
+# Cancel a superseded run rather than queue it. The only cost of stopping one is
+# the seconds it had already spent.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -24,6 +26,9 @@ concurrency:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    # A stuck job holds a runner for six hours by default. Nothing here takes
+    # more than one minute.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -32,11 +37,30 @@ jobs:
           enable-cache: true
       - name: Install the locked environment
         run: uv sync --frozen
+
+      # The image installs from submission/requirements.txt, which is generated
+      # from uv.lock. Letting the two drift would have the deployment run
+      # versions nothing here ever tested, so regenerate and fail on a diff.
+      - name: The webhook's requirements match the lockfile
+        run: |
+          uv export -q --frozen --no-dev --no-emit-project -o submission/requirements.txt
+          git diff --exit-code submission/requirements.txt
+
       - name: Lint
         run: uv run ruff check .
       # --check reports, never rewrites: CI states the verdict, `ruff format`
       # locally does the fixing.
       - name: Format
         run: uv run ruff format --check .
+      # No path here, pyproject.toml's testpaths decides where the tests live.
       - name: Unit tests
-        run: uv run pytest tests/ -q
+        run: uv run pytest -q
+
+      # The deployment files. Both tools ship with the runner, so these cost
+      # nothing to run and catch what would otherwise surface on a server: a
+      # compose file that no longer parses, a variable that resolves to nothing,
+      # a quoting mistake in the one script a deployment runs.
+      - name: The compose file resolves
+        run: docker compose --env-file .env.example config --quiet
+      - name: The deployment script
+        run: shellcheck scripts/setup.sh
