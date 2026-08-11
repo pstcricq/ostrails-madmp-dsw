@@ -130,6 +130,10 @@ read, and it is laid out beforehand from madmp-core.
 
 Submitting the same DMP twice commits nothing the second time.
 
+The container needs **outbound HTTPS to `api.github.com`**, which is the one
+thing in this deployment that reaches outside the host. Everything else talks
+on the compose network.
+
 Wiring it up in DSW means declaring a submission service with two things: the
 URL above, carrying the project's folder in its query string, and one static
 header, `Authorization: Bearer <SUBMISSION_TOKEN>`. madmp-core's `dsw.publish
