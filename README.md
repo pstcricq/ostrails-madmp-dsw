@@ -1,29 +1,39 @@
 # madmp-dsw
 
-A Data Stewardship Wizard 4.31 deployment for the maDMP project, meant to run
-online in a Codespace so that content published from CI can be tested and looked
-at in a browser.
+A Data Stewardship Wizard 4.31 deployment for the maDMP project, plus the one
+piece of code it carries of its own: the **submission webhook**, which commits a
+rendered DMP into the `dmp-registry` repository.
 
 It starts from the [official deployment
 example](https://github.com/ds-wizard/dsw-deployment-example) at its 4.31
-release, kept as the `upstream` remote, cut down to the few files a deployment
-needs, and it carries one piece of code of its own: the **submission webhook**
-that commits a rendered DMP into the `dmp-registry` repository.
+release, kept as the `upstream` remote. What differs from it is listed at the
+end of this file, and why it differs is in [TECHNICAL_GUIDE.md](TECHNICAL_GUIDE.md).
 
 ## Quick start
+
+```bash
+cp .env.example .env
+```
+
+Fill in the eight empty values. Each one has, right above it, what it is and how
+to produce it. Then:
 
 ```bash
 bash scripts/setup.sh
 ```
 
-That is the whole procedure, locally and in a Codespace alike. It creates
-`.env`, generates the secrets, starts the stack, creates the bucket, and prints
-where to go. Running it again is safe.
+The script prints what the stack will run with, starts it, creates the bucket
+and tells you where to go. It writes nothing and can be re-run at will. The two
+commands it wraps are:
 
-In a Codespace it runs by itself at creation, and the three URLs point at the
-forwarded domain instead of localhost.
+```bash
+docker compose up -d --wait && docker compose run --rm createbucket
+```
 
-| | Local |
+Measured on a laptop, from no image and no volume: about a minute of downloads,
+then twelve seconds. On a machine that already has the images, twelve seconds.
+
+| | |
 |---|---|
 | Client | http://localhost:8080/wizard |
 | API | http://localhost:3000/wizard-api |
@@ -32,168 +42,144 @@ forwarded domain instead of localhost.
 **Enter through `/wizard`, not through the bare origin.** The client image
 redirects `/` to an absolute `http://` address built from the protocol nginx
 itself listens on, so behind a TLS terminator the browser is sent to `http` on a
-host that only serves `https`. That is what makes the PORTS panel link fail in a
-Codespace, where the tunnel is the terminator and is not ours to configure.
-Behind your own reverse proxy the fix belongs there, with `proxy_redirect
-http:// https://` or a root redirect of its own.
+host that only serves `https`. Behind your own reverse proxy the fix belongs
+there, with `proxy_redirect http:// https://` or a root redirect of its own.
 
-## What is in here
+## What runs
 
-The split is deliberate: `.devcontainer/` holds what only a Codespace needs and
-what any other deployment can delete outright, everything else applies wherever
-the stack runs.
+| Service | Port on the host | Role |
+|---|---|---|
+| `client` | 127.0.0.1:8080 | the web interface |
+| `server` | 127.0.0.1:3000 | the API |
+| `docworker` | none | renders documents |
+| `submission` | none | the maDMP webhook, reached by DSW as `submission:8080` |
+| `postgres` | none | the database |
+| `minio` | 127.0.0.1:9000, 9001 | object storage, and its console |
+| `createbucket` | one-shot | creates the bucket, under the `tools` profile |
 
-| File | Role |
-|---|---|
-| `docker-compose.yml` | the six services, plus a one-shot bucket creator |
-| `.env.example` | every value the stack reads, with its defaults documented |
-| `scripts/setup.sh` | from nothing to a running stack, in one command |
-| `submission/` | the webhook: FastAPI wiring, its logic, a GitHub client |
-| `tests/` | the webhook's unit tests |
-| `pyproject.toml`, `uv.lock` | one uv environment for the webhook and its tests |
-| `.github/workflows/ci.yml` | lint, format and unit tests, on every push |
-| `.devcontainer/devcontainer.json` | the Codespace: ports, lifecycle |
-| `.devcontainer/publish-ports.sh` | makes 3000 and 9000 public, at every start |
+Everything is bound to `127.0.0.1`. Reaching the stack from another machine
+means putting a reverse proxy in front of it, see below.
 
-`setup.sh` is the one general script, and it is Codespace-aware in exactly one
-place, the section that computes the three URLs. Give it a third case, or write
-those URLs into `.env` by hand, and it serves any host.
+`postgres`, `minio`, `server` and `submission` have healthchecks, which is what
+makes `up --wait` mean something: it returns when the stack answers, not when
+the containers exist.
 
 ## Configuration
 
-**`.env` is the single source of truth.** There is no `application.yml`.
+**`.env` is the single source of truth, and it is filled by hand.** There is no
+`application.yml` and no script that generates anything.
 
 DSW resolves every setting from the environment before reading its config file,
 so `docker-compose.yml` composes DSW's own settings out of the values in `.env`.
-The Postgres password, for instance, is written once and turned into a
-connection string there. Nothing is spelled out twice, so nothing can drift.
+The variable names are the `application.yml` paths in upper case:
+`general.clientUrl` is `GENERAL_CLIENT_URL`, `s3.url` is `S3_URL`.
 
-The environment variable names are the `application.yml` paths in upper case:
-`general.clientUrl` is `GENERAL_CLIENT_URL`, `s3.url` is `S3_URL`. The server
-logs each one it applies, so `docker compose logs server` shows what arrived.
+Nineteen values, in two groups:
 
-Values fall into four groups, and `.env.example` says which is which:
+- **eleven carry a working value**: the four image versions, the database name,
+  the two usernames, the bucket, and the three URLs of a local deployment
+- **eight are empty**: the two passwords, the two DSW signing secrets, and the
+  webhook's four variables. `.env.example` says what each one is and gives the
+  command that produces it where there is one
 
-- **fixed**, copied as they are: the four versions, the two usernames, the
-  bucket name
-- **computed** by `setup.sh` depending on where it runs: the three URLs, which
-  are the only values that depend on the machine, because they are what the
-  *browser* resolves
-- **generated** by `setup.sh`, once, and never regenerated: the two
-  infrastructure passwords, the two DSW signing secrets, and the webhook's
-  `SUBMISSION_TOKEN`
-- **brought from outside**, because no script can invent them:
-  `REGISTRY_TOKEN`, a GitHub PAT you create, and `DSW_ADMIN_EMAIL` /
-  `DSW_ADMIN_PASSWORD`. Locally they go in `.env`, which is gitignored. In a
-  Codespace they are repository Secrets and reach the containers through the
-  environment without ever touching `.env`, because compose lets the environment
-  win over that file
+`scripts/setup.sh` reports every value it finds, where it comes from, and stops
+if one is missing. Secrets are reported as `set`, never printed.
 
-`setup.sh` reconciles `.env` with `.env.example` on every run, adding a key the
-example has gained and leaving every existing value alone. Without that, a
-deployment created before the key existed would never see it, and compose would
-pass an empty string rather than the documented default.
+Compose lets the environment win over `.env`. A name exported in the shell, or
+provided by whatever runs the containers, therefore reaches them while `.env`
+still shows something else. That is why the script reports the origin of each
+value rather than reading the file alone.
 
-To read a generated value back:
+## Deploying somewhere else
 
-```bash
-grep MINIO_ROOT_PASSWORD .env
+Three values change, and they are the ones the **browser** resolves, so they
+depend on where the stack is reached from, not on where it runs:
+
+```
+API_URL=https://dsw.example.org/wizard-api
+CLIENT_URL=https://dsw.example.org/wizard
+S3_URL=...
 ```
 
-## Ports
+The `/wizard` and `/wizard-api` paths are what lets both live under one domain,
+with a reverse proxy routing the first to port 8080 and the second to port 3000.
 
-| Port | Service | Codespace visibility |
-|---|---|---|
-| 8080 | client | private |
-| 3000 | server API | **public** |
-| 9000 | MinIO S3 API | **public** |
-| 9001 | MinIO console | not forwarded |
-| 5432 | Postgres | not published at all |
-| 8080 | submission webhook | not published either, DSW reaches it by service name |
+`S3_URL` is the awkward one. The browser downloads documents straight from
+MinIO through a presigned URL, so MinIO needs a public address of its own. A
+subdomain is simpler than a path: MinIO puts the bucket name in the path, so
+proxying it under `/s3` means rewriting URLs.
 
-The split is not a preference. A private port works for a page you navigate to,
-because the browser sends its GitHub cookie on a first-party navigation. That
-cookie is not sent cross-origin, and the other two are read cross-origin: the
-client calls the API by XHR, and the browser fetches documents straight from
-MinIO through a presigned URL. Leaving those private breaks the application in
-ways that look like bugs.
+Two cases need a change in `docker-compose.yml` itself rather than in `.env`:
 
-Port 3000 being public is also what lets a GitHub Actions runner reach the API.
-
-**Visibility is set by `.devcontainer/publish-ports.sh`, not by the devcontainer.**
-`portsAttributes` carries labels and nothing more. Its `visibility` key was never
-implemented by GitHub, it is an open feature request, so declaring it there would
-read as a setting while doing nothing. The ports come up private on a fresh
-codespace and again after every wake-up, and `postStartCommand` publishes them
-each time.
-
-The script waits for both services to answer locally before publishing, then
-reads the visibility back rather than trusting the command's exit status. Both
-matter: a call issued before the stack was up once left 9000 private while
-reporting success.
-
-Nothing to do by hand, then. If it ever fails it says so and the start is marked
-failed, and the PORTS panel of VS Code remains the fallback, right click a port
-then Port Visibility.
-
-Everything is bound to `127.0.0.1` on the host. Publishing on `0.0.0.0`, which
-upstream does for MinIO, exposes the service to the whole network the machine
-sits on, and on Linux it bypasses `ufw` entirely.
-
-## Accounts
-
-DSW seeds three demo accounts whose addresses and password are published.
-`setup.sh` replaces them with one of your own, taken from `DSW_ADMIN_EMAIL` and
-`DSW_ADMIN_PASSWORD`, and only after proving that account can log in. Without
-those two variables it changes nothing and says so.
-
-`system@example.com` is left alone. It is flagged `machine` and carries no usable
-password hash, so no input opens it, and DSW uses it internally.
-
-Since the demo account is gone, publishing from CI needs `DSW_EMAIL` and
-`DSW_PASSWORD` rather than relying on the defaults in `dsw/publish.py`.
+- the reverse proxy runs on **another machine**, so the `127.0.0.1:` prefixes
+  have to go, with a firewall taking over
+- the infrastructure provides a **managed Postgres or S3**, which means removing
+  services rather than changing values
 
 ## The submission webhook
 
 DSW's Submit feature POSTs a rendered DMP to
-`http://submission:8080/submissions?project=<folder>`, on the compose network, so
+`http://submission:8080/submissions?project=<folder>` on the compose network, so
 the service needs no published port. The webhook commits the document into
-`projects/<folder>/template/` of the `dmp-registry` repository and rewrites its
+`projects/<folder>/template/` of the registry repository and rewrites its
 `dmp_id`, a DSW placeholder until then, to that file's stable raw URL.
 
 It creates nothing. A folder with no `meta.yaml` is refused rather than half
-built, because that file carries the identity and the rules pins the quality
-checks read, and it is laid out beforehand from madmp-core.
+built: that file carries the identity and the rules pins the quality checks
+read, and it is laid out beforehand from madmp-core.
 
-Four variables, all in `.env`, and they are the whole contract:
+Submitting the same DMP twice commits nothing the second time.
+
+Wiring it up in DSW means declaring a submission service with two things: the
+URL above, carrying the project's folder in its query string, and one static
+header, `Authorization: Bearer <SUBMISSION_TOKEN>`. madmp-core's `dsw.publish
+submission` writes that configuration through the API.
+
+What it answers:
 
 | | |
 |---|---|
-| `SUBMISSION_TOKEN` | shared secret DSW sends as `Authorization: Bearer …` |
+| 200 | with `action` being `created`, `updated` or `unchanged`, and a `Location` header DSW shows as a link |
+| 400 | the folder is missing, unsafe, or not laid out, or the body is not a DMP |
+| 401 | wrong or missing token |
+| 502 | GitHub refused the call, or could not be reached |
+
+Four variables, and they are the whole contract:
+
+| | |
+|---|---|
+| `SUBMISSION_TOKEN` | the shared secret above |
 | `REGISTRY_TOKEN` | fine-grained PAT, Contents RW on the registry repo |
 | `REGISTRY_OWNER`, `REGISTRY_REPO` | where the registry lives |
 
-`REGISTRY_` rather than `GITHUB_`, because compose lets the shell win over
-`.env` and a developer's shell very often already holds a `GITHUB_TOKEN`. A
-collision there would commit with the wrong credentials, silently.
+They are read once, at startup. An incomplete `.env` leaves the container
+restarting in a loop, and `docker compose logs submission` names what is
+missing, rather than the webhook answering `/health` and failing on the first
+real submission.
 
-Working on it:
+## Accounts
 
-```bash
-uv run pytest -q
-uv run ruff check .
-uv run ruff format .
-```
+DSW seeds three demo accounts whose addresses and password are published, and
+`setup.sh` says so at the end of every run for as long as they answer. Removing
+them is a manual step, in this order:
 
-CI runs those same three on every push, and nothing else: the rest of this
-repository is declarative, and no job can tell whether a deployment is correct
-without deploying it.
+1. log in as `albert.einstein@example.com` / `password`
+2. create your own administrator account
+3. log in as yourself, check that it works
+4. delete the three seeded accounts
+
+The order matters: deleting them first locks you out of your own instance with
+no way back but `psql`.
+
+`system@example.com` is not one of them. It is flagged `machine`, carries no
+usable password hash, and DSW uses it internally.
 
 ## Everyday commands
 
 ```bash
-docker compose ps                      # what is running, and on which ports
+docker compose ps                      # what is running, and whether it is healthy
 docker compose logs -f server          # the server, including the config it applied
+docker compose logs submission         # what the webhook did with a submission
 docker compose exec postgres psql -U postgres -d engine-wizard
 docker compose run --rm createbucket   # idempotent, safe to repeat
 docker compose stop                    # keeps containers and data
@@ -201,18 +187,40 @@ docker compose down                    # removes containers, keeps the volumes
 docker compose down -v                 # removes the data too
 ```
 
-Inspecting the database needs no published port: `exec` goes through the Docker
+Inspecting the database needs no published port, `exec` goes through the Docker
 daemon rather than the network.
 
-## Starting over
+## Working on the webhook
 
 ```bash
-docker compose down -v && rm .env && bash scripts/setup.sh
+uv run pytest -q          # 39 tests
+uv run ruff check .
+uv run ruff format .
 ```
 
-Both halves are needed. Deleting `.env` alone would generate a new Postgres
-password while the volume still holds an account created with the old one, and
-that account is created only once, at the first `initdb`.
+CI runs those, plus three checks on the deployment itself: that
+`submission/requirements.txt` still matches `uv.lock`, that the compose file
+resolves, and that `scripts/setup.sh` passes shellcheck.
+
+Adding a dependency means regenerating the file the image installs from:
+
+```bash
+uv export -q --frozen --no-dev --no-emit-project -o submission/requirements.txt
+```
+
+## Layout
+
+```
+docker-compose.yml          the seven services
+.env.example                every value the stack reads
+scripts/setup.sh            reports the configuration, then brings the stack up
+submission/                 the webhook: app.py, service.py, github_client.py
+  Dockerfile                its image, installing from requirements.txt
+  requirements.txt          generated from uv.lock, hashes included
+tests/                      the webhook's unit tests
+pyproject.toml, uv.lock     one uv environment for the webhook and its tests
+.github/workflows/ci.yml    six checks
+```
 
 ## What differs from upstream
 
@@ -222,6 +230,8 @@ that account is created only once, at the first `initdb`.
   folder rename
 - named volumes are enabled. Without them `docker compose down` destroys the
   database and the bucket
+- healthchecks on Postgres and on the server, the second replacing one that
+  could not report healthy in under five minutes
 - Postgres is not published, and MinIO is bound to the loopback
 - the bucket is created by a compose service under a profile, replacing a script
   that guessed its network and asked for an `mc` image tag that does not exist
