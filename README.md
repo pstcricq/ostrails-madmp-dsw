@@ -120,13 +120,21 @@ Two cases need a change in `docker-compose.yml` itself rather than in `.env`:
 
 DSW's Submit feature POSTs a rendered DMP to
 `http://submission:8080/submissions?project=<folder>` on the compose network, so
-the service needs no published port. The webhook commits the document into
-`projects/<folder>/template/` of the registry repository and rewrites its
-`dmp_id`, a DSW placeholder until then, to that file's stable raw URL.
+the service needs no published port. The webhook commits into
+`projects/<folder>/template/` of the registry repository and rewrites the
+document's `dmp_id`, a DSW placeholder until then, to its stable raw URL.
 
-It creates nothing. A folder with no `meta.yaml` is refused rather than half
-built: that file carries the identity and the rules pins the quality checks
-read, and it is laid out beforehand from madmp-core.
+It commits **two files in one commit**. The rendered document carries a
+`metadata` object beside `dmp`, naming the project, the template version and
+the rules versions it was built from. The webhook takes that object out, so the
+DMP lands as RDA DCS alone, and writes it next to the DMP as
+`dmp_<folder>_template.meta.json`, in the same commit, so a DMP is never in the
+registry without the versions it must be checked against. A document that
+carries no such object is refused: its rules versions are unknown, and guessing
+them is worse than saying so.
+
+It creates nothing. A folder with no `template/.gitkeep` is refused rather than
+half built, the folder being laid out beforehand from madmp-core.
 
 Submitting the same DMP twice commits nothing the second time.
 
@@ -144,7 +152,7 @@ What it answers:
 | | |
 |---|---|
 | 200 | with `action` being `created`, `updated` or `unchanged`, and a `Location` header DSW shows as a link |
-| 400 | the folder is missing, unsafe, or not laid out, or the body is not a DMP |
+| 400 | the folder is missing, unsafe, or not laid out, or the body is not a DMP carrying its `metadata` object |
 | 401 | wrong or missing token |
 | 502 | GitHub refused the call, or could not be reached |
 

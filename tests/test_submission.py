@@ -25,22 +25,39 @@ from service import (
 CONFIG = SubmissionConfig(github_owner="Pierrott64", registry_repo="dmp-registry")
 DSW_URL = "http://localhost:8080/wizard/projects/7c42caa4-a0e0-4112-9623-4334641c457a"
 DMP_PATH = "projects/glider/template/dmp_glider_template.json"
+META_PATH = "projects/glider/template/dmp_glider_template.meta.json"
 RAW_URL = f"https://raw.githubusercontent.com/Pierrott64/dmp-registry/main/{DMP_PATH}"
+ENVELOPE = {
+    "project": "glider",
+    "template_version": "1.0.0",
+    "rules": [{"rda_dcs": "1.0.0"}, {"ostrails": "1.0.0"}],
+}
 
 
-def _document(title="Glider mission DMP", identifier=DSW_URL):
-    return {
+def _document(title="Glider mission DMP", identifier=DSW_URL, envelope=None):
+    """What a maDMP document template renders: the dmp object, and beside it
+    the provenance block the webhook takes back out."""
+    document = {
         "dmp": {"title": title, "dmp_id": {"identifier": identifier, "type": "url"}}
     }
+    envelope = ENVELOPE if envelope is None else envelope
+    if envelope is not ...:
+        document["metadata"] = json.loads(json.dumps(envelope))
+    return document
 
 
 class FakeGitHub:
-    """In-memory stand-in for GitHubClient: just get_file / put_file over one
-    registry repo (path -> bytes)."""
+    """In-memory stand-in for GitHubClient: get_file and commit_files over one
+    registry repo (path -> bytes).
+
+    A commit is recorded as the paths it carried and its message, so a test
+    can assert that several files travelled together and not one after the
+    other.
+    """
 
     def __init__(self, files: dict[str, bytes] | None = None):
         self.files = dict(files or {})
-        self.commits: list[tuple[str, str]] = []
+        self.commits: list[tuple[list[str], str]] = []
 
     def get_file(self, owner, repo, path):
         if path not in self.files:
@@ -50,20 +67,15 @@ class FakeGitHub:
             "content": base64.b64encode(self.files[path]).decode(),
         }
 
-    def put_file(self, owner, repo, path, content, message, sha=None):
-        # (!!) GitHub answers 409 to a write over an existing file without its
-        # sha. Accepting it here would let the tests pass on code that cannot
-        # update anything in production.
-        if path in self.files and not sha:
-            raise GitHubError(409, f"{path} exists and no sha was given")
-        self.files[path] = content
-        self.commits.append((path, message))
-        return {}
+    def commit_files(self, owner, repo, branch, files, message):
+        self.files.update(files)
+        self.commits.append((sorted(files), message))
+        return "new-commit-sha"
 
 
 def _initialized(folder="glider") -> FakeGitHub:
     """A registry where the project's folder has already been laid out."""
-    return FakeGitHub({f"projects/{folder}/meta.yaml": b"id: glider\nrules: []\n"})
+    return FakeGitHub({f"projects/{folder}/template/.gitkeep": b""})
 
 
 # Routing + dmp_id rewrite
@@ -83,7 +95,7 @@ def test_first_submit_writes_dmp_and_rewrites_dmp_id():
 def test_folder_only_touches_its_own_path():
     github = _initialized("glider")
     handle_submission(_document(), "glider", github, CONFIG)
-    assert [c[0] for c in github.commits] == [DMP_PATH]
+    assert [paths for paths, _ in github.commits] == [[DMP_PATH, META_PATH]]
 
 
 def test_commit_message_names_the_project():
@@ -96,6 +108,70 @@ def test_commit_message_names_the_project():
         "Add DMP for glider (DSW submission)",
         "Update DMP for glider (DSW submission)",
     ]
+
+
+# The provenance envelope
+
+
+def test_the_envelope_leaves_the_dmp_and_lands_beside_it():
+    """The whole point of the block: what the registry holds is RDA DCS and
+    nothing else, and the versions it was built from sit next to it, written
+    by the same commit so the two can never disagree."""
+    github = _initialized()
+    result = handle_submission(_document(), "glider", github, CONFIG)
+    assert result["metadata"] == META_PATH
+    assert "metadata" not in json.loads(github.files[DMP_PATH])
+    assert json.loads(github.files[META_PATH]) == ENVELOPE
+
+
+def test_the_envelope_travels_in_the_commit_that_carries_the_dmp():
+    """One commit, both files. Two commits would let the second fail and
+    leave a DMP whose rules versions nobody knows."""
+    github = _initialized()
+    handle_submission(_document(), "glider", github, CONFIG)
+    assert len(github.commits) == 1
+    assert github.commits[0][0] == [DMP_PATH, META_PATH]
+
+
+def test_a_document_without_an_envelope_is_refused():
+    """A DMP whose rules versions are unknown cannot be checked against them,
+    and a folder holding one would have to be cleaned up by hand."""
+    github = _initialized()
+    with pytest.raises(SubmissionError, match="carries no 'metadata' object"):
+        handle_submission(_document(envelope=...), "glider", github, CONFIG)
+    assert github.commits == []
+
+
+def test_an_envelope_naming_another_project_is_refused():
+    """The folder comes from the service URL and the project name from the
+    template. They disagreeing means the document was submitted through
+    somebody else's service, and it must not land in that folder."""
+    envelope = {**ENVELOPE, "project": "canales"}
+    with pytest.raises(SubmissionError, match="generated for project 'canales'"):
+        handle_submission(
+            _document(envelope=envelope), "glider", _initialized(), CONFIG
+        )
+
+
+@pytest.mark.parametrize(
+    "rules",
+    [
+        pytest.param(None, id="absent"),
+        pytest.param([], id="empty"),
+        pytest.param("rda_dcs 1.0.0", id="a string"),
+        pytest.param([{"rda_dcs": "1.0.0", "ostrails": "1.0.0"}], id="two keys in one"),
+        pytest.param([{"rda_dcs": 1.0}], id="an unquoted version"),
+        pytest.param([{"rda_dcs": ""}], id="an empty version"),
+    ],
+)
+def test_malformed_pins_are_refused(rules):
+    """Quality control resolves these into file paths, so a shape it cannot
+    read has to be caught here, while there is still somebody to tell."""
+    envelope = {**ENVELOPE, "rules": rules}
+    github = _initialized()
+    with pytest.raises(SubmissionError, match="metadata.rules"):
+        handle_submission(_document(envelope=envelope), "glider", github, CONFIG)
+    assert github.commits == []
 
 
 # Idempotence
@@ -128,15 +204,27 @@ def test_resubmit_changed_content_updates():
         _document(title="Renamed project"), "glider", github, CONFIG
     )
     assert result["action"] == "updated"
-    assert [c[0] for c in github.commits[before:]] == [DMP_PATH]
+    assert [paths for paths, _ in github.commits[before:]] == [[DMP_PATH, META_PATH]]
+
+
+def test_a_new_template_version_alone_is_an_update():
+    """The envelope is compared like the DMP is. A researcher who answered
+    nothing new but migrated to a newer template has to leave a trace, that
+    is the fact quality control reads."""
+    github = _initialized()
+    handle_submission(_document(), "glider", github, CONFIG)
+    envelope = {**ENVELOPE, "template_version": "2.0.0"}
+    result = handle_submission(_document(envelope=envelope), "glider", github, CONFIG)
+    assert result["action"] == "updated"
+    assert json.loads(github.files[META_PATH])["template_version"] == "2.0.0"
 
 
 # Guards
 
 
 def test_uninitialized_folder_refused():
-    """No meta.yaml (the project was never registered) -> refuse, don't
-    half-create."""
+    """No template/.gitkeep (the project was never registered) -> refuse,
+    don't half-create."""
     github = FakeGitHub()
     with pytest.raises(SubmissionError, match="not initialized"):
         handle_submission(_document(), "glider", github, CONFIG)
@@ -243,12 +331,12 @@ def test_http_reports_a_refused_write_rather_than_success(monkeypatch):
     believe was filed."""
 
     class RefusingGitHub(FakeGitHub):
-        def put_file(self, *args, **kwargs):
+        def commit_files(self, *args, **kwargs):
             raise GitHubError(404, "Not Found")
 
     settings = Settings(
         submission_token="s3cret",
-        github=RefusingGitHub({"projects/glider/meta.yaml": b"id: glider\n"}),
+        github=RefusingGitHub({"projects/glider/template/.gitkeep": b""}),
         config=CONFIG,
     )
     monkeypatch.setattr(app.state, "build", lambda: settings)
@@ -387,13 +475,13 @@ def test_get_file_raises_on_any_other_error(monkeypatch):
     assert raised.value.status == 403
 
 
-def test_put_file_treats_a_404_as_a_failure(monkeypatch):
+def test_a_commit_treats_a_404_as_a_failure(monkeypatch):
     """A 404 on a write means the write did not happen. Reading it as an
     absence, the way a GET does, let a submission that wrote nothing answer
     200 with `"action": "created"` and a link to a file that was never there."""
     _stub_urlopen(monkeypatch, status=404)
     with pytest.raises(GitHubError) as raised:
-        GitHubClient("token").put_file("owner", "repo", "path", b"x", "message")
+        GitHubClient("token").commit_files("o", "r", "main", {"p": b"x"}, "message")
     assert raised.value.status == 404
 
 
@@ -412,13 +500,58 @@ def test_unreachable_github_is_the_same_error_without_a_status(monkeypatch):
     assert "unreachable" in str(raised.value)
 
 
-def test_put_file_sends_the_content_encoded_and_the_token(monkeypatch):
-    seen = _stub_urlopen(monkeypatch)
-    GitHubClient("token").put_file("o", "r", "some/path", b"payload", "msg", sha="abc")
-    request = seen["request"]
-    body = json.loads(request.data)
-    assert request.get_method() == "PUT"
-    assert request.full_url.endswith("/repos/o/r/contents/some/path")
-    assert base64.b64decode(body["content"]) == b"payload"
-    assert body["sha"] == "abc"
-    assert request.headers["Authorization"] == "Bearer token"
+def _stub_git_data(monkeypatch):
+    """A GitHub that answers the four calls a commit makes, and hands back
+    every request that was built, in order."""
+    seen: list[urllib.request.Request] = []
+    answers = {
+        "/branches/main": {
+            "commit": {"sha": "parent", "commit": {"tree": {"sha": "base"}}}
+        },
+        "/git/trees": {"sha": "new-tree"},
+        "/git/commits": {"sha": "new-commit"},
+        "/git/refs/heads/main": {},
+    }
+
+    def stub(request, timeout=None):
+        seen.append(request)
+        for suffix, payload in answers.items():
+            if request.full_url.endswith(suffix):
+                return _Reply(json.dumps(payload).encode())
+        raise AssertionError(f"unexpected call {request.full_url}")
+
+    monkeypatch.setattr(urllib.request, "urlopen", stub)
+    return seen
+
+
+def test_a_commit_builds_a_tree_then_moves_the_branch(monkeypatch):
+    """The order is what makes the write atomic: the files go into a tree and
+    a commit, neither of which anything points at, and one reference move
+    publishes them all at once."""
+    seen = _stub_git_data(monkeypatch)
+    sha = GitHubClient("token").commit_files(
+        "o", "r", "main", {"a/one.json": b"1", "a/two.json": b"2"}, "msg"
+    )
+    assert sha == "new-commit"
+    assert [r.get_method() for r in seen] == ["GET", "POST", "POST", "PATCH"]
+    assert [r.full_url.split("/repos/o/r")[1] for r in seen] == [
+        "/branches/main",
+        "/git/trees",
+        "/git/commits",
+        "/git/refs/heads/main",
+    ]
+    tree = json.loads(seen[1].data)
+    assert tree["base_tree"] == "base"
+    assert {entry["path"]: entry["content"] for entry in tree["tree"]} == {
+        "a/one.json": "1",
+        "a/two.json": "2",
+    }
+    assert all(entry["mode"] == "100644" for entry in tree["tree"])
+    commit = json.loads(seen[2].data)
+    assert (commit["tree"], commit["parents"], commit["message"]) == (
+        "new-tree",
+        ["parent"],
+        "msg",
+    )
+    assert json.loads(seen[3].data)["sha"] == "new-commit"
+    assert seen[0].headers["Authorization"] == "Bearer token"

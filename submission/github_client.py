@@ -1,15 +1,14 @@
-"""Thin GitHub Contents API client: the two calls the webhook needs.
+"""Thin GitHub client: reading a file, and committing several at once.
 
 Synchronous and stdlib-only. The blocking call is the reason app.py hands
 handle_submission to a thread pool rather than awaiting it: run from the event
 loop, the wait below would freeze the whole process, /health included.
 
-Kept as its own class so tests can swap in a fake with the same two methods.
+Kept as its own class so tests can swap in a fake with the same methods.
 """
 
 from __future__ import annotations
 
-import base64
 import json
 import urllib.error
 import urllib.request
@@ -39,8 +38,9 @@ class GitHubClient:
         """The decoded response body, or None when there is none.
 
         (!!) Every error status raises, 404 included. A 404 means "no such
-        file" on a GET and "the write did not happen" on a PUT, and only the
-        caller knows which, so the distinction is not made here.
+        file" when reading one and "the write did not happen" on any call of
+        a commit, and only the caller knows which, so the distinction is not
+        made here.
 
         Failing to reach GitHub raises the same error, without a status, so a
         caller has one exception to handle rather than two. 30 seconds is the
@@ -81,20 +81,55 @@ class GitHubClient:
                 return None
             raise
 
-    def put_file(
+    def commit_files(
         self,
         owner: str,
         repo: str,
-        path: str,
-        content: bytes,
+        branch: str,
+        files: dict[str, bytes],
         message: str,
-        sha: str | None = None,
-    ) -> dict[str, Any]:
-        """Create or (when `sha` names the current version) update a file."""
-        body: dict[str, Any] = {
-            "message": message,
-            "content": base64.b64encode(content).decode(),
-        }
-        if sha:
-            body["sha"] = sha
-        return self._request("PUT", f"/repos/{owner}/{repo}/contents/{path}", body)
+    ) -> str:
+        """Commit several files as one commit, and return its sha.
+
+        Four calls of the Git Data API, and only the last one writes: the
+        branch is read, a tree is built over the one it points at, a commit is
+        built over that tree, and the branch reference is moved onto it. The
+        files therefore all land or none does, where one call per file leaves
+        a submission half written when the second fails.
+
+        `content` goes into the tree as text, so every file here must be
+        UTF-8.
+
+        (!!) The reference is moved without `force`. A branch that moved
+        between the read and the move makes GitHub refuse, which is the
+        wanted answer: the write did not happen, and the caller is told.
+        """
+        head = self._request("GET", f"/repos/{owner}/{repo}/branches/{branch}")
+        parent = head["commit"]["sha"]
+        tree = self._request(
+            "POST",
+            f"/repos/{owner}/{repo}/git/trees",
+            {
+                "base_tree": head["commit"]["commit"]["tree"]["sha"],
+                "tree": [
+                    {
+                        "path": path,
+                        "mode": "100644",
+                        "type": "blob",
+                        "content": content.decode(),
+                    }
+                    for path, content in files.items()
+                ],
+            },
+        )
+        commit = self._request(
+            "POST",
+            f"/repos/{owner}/{repo}/git/commits",
+            {"message": message, "tree": tree["sha"], "parents": [parent]},
+        )
+        self._request(
+            "PATCH",
+            f"/repos/{owner}/{repo}/git/refs/heads/{branch}",
+            {"sha": commit["sha"]},
+        )
+        return commit["sha"]

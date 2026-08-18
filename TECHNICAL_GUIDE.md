@@ -161,13 +161,27 @@ and `GITHUB_TOKEN` is a name a developer's shell very often already holds. The
 collision would have the webhook commit with someone else's credentials, in
 silence.
 
-**A 404 is an absence on a GET and a failure on a PUT.** The transport raises on
-every error status, and `get_file` alone catches the 404 and reads it as an
-absence. Reading it as an absence in the transport would mean a `PUT` GitHub
-refused, for a revoked token, a renamed repository or a wrong `REGISTRY_OWNER`,
-returns nothing instead of raising, and the webhook answers 200 with
-`"action": "created"` and a link to a file that was never written. DSW would
-display a successful submission and the DMP would be lost silently.
+**The DMP and its provenance are one commit.** The rendered document carries a
+`metadata` object beside `dmp`. The webhook takes it out, which purifies the
+DMP and yields the block in the same gesture, and commits both files through
+the Git Data API: the branch is read, a tree is built over it, a commit over
+that tree, and the branch reference is moved once. Nothing points at the tree
+or the commit until that move, so the two files land together or not at all.
+Two calls of the Contents API would leave a DMP whose rules versions are
+missing whenever the second fails, and there is no state here to repair it
+with.
+
+The reference is moved without `force`, so a branch that moved in between makes
+GitHub refuse. That is the wanted answer, the write did not happen and the
+caller is told.
+
+**A 404 is an absence on a read and a failure on a write.** The transport
+raises on every error status, and `get_file` alone catches the 404 and reads it
+as an absence. Reading it as an absence in the transport would mean a write
+GitHub refused, for a revoked token, a renamed repository or a wrong
+`REGISTRY_OWNER`, returns nothing instead of raising, and the webhook answers
+200 with `"action": "created"` and a link to a file that was never written. DSW
+would display a successful submission and the DMP would be lost silently.
 
 GitHub also answers 404 for a repository the token cannot see, so an absence
 means "not there, or not visible with this token", which is why the error about
@@ -186,7 +200,15 @@ the caller sent, so comparing strings turns a malformed token into a 500.
 
 **The registry branch is a named constant.** It ends up inside every `dmp_id`,
 which is the DMP's stable identifier, so moving the registry to another branch
-leaves every identifier ever issued pointing nowhere.
+leaves every identifier ever issued pointing nowhere. It is also the reference
+a commit moves.
+
+**A malformed envelope is refused, never defaulted.** The project it names must
+be the folder the submission was routed to, which catches one project's
+document submitted through another's service, and its pins must be a non-empty
+list of one-key mappings of strings, the shape quality control resolves into
+file paths. A DMP whose rules versions are unknown cannot be checked against
+them.
 
 **No GitHub account is named in the repository.** `REGISTRY_OWNER` and
 `REGISTRY_REPO` ship empty. The tests use fixed values because they need
@@ -257,10 +279,11 @@ claiming to know better than the tool on a codebase that passes its defaults.
 ## 10. Known limits
 
 **Idempotence stops above 1 MB.** GitHub's Contents API inlines a file's content
-up to 1 MB and answers with an empty `content` above that. A DMP that large
-never compares equal to what is stored, so every submission commits again
-instead of reporting `unchanged`. Nothing breaks, the guarantee quietly stops
-holding.
+up to 1 MB and answers with an empty `content` above that, and that read is how
+a submission is compared with what is stored. A DMP that large never compares
+equal, so every submission commits again instead of reporting `unchanged`.
+Nothing breaks, the guarantee quietly stops holding. Only the read is
+concerned, a commit carries its files as tree entries and has no such limit.
 
 **No retry and no rate-limit handling.** GitHub answering 403 or 429 surfaces as
 a 502 to DSW. Acceptable for one instance submitting occasionally.
