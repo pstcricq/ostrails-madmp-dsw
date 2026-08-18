@@ -669,6 +669,31 @@ def test_a_branch_with_nothing_to_offer_still_raises(monkeypatch):
     assert raised.value.status == 422
 
 
+@pytest.mark.parametrize("status", [404, 422])
+def test_a_branch_that_is_not_there_is_created(monkeypatch, status):
+    """The usual case after a merged review, which deletes the branch. The
+    move fails and the create follows, so a submission after a merge does not
+    need a branch somebody kept."""
+    calls: list[urllib.request.Request] = []
+
+    def stub(request, timeout=None):
+        calls.append(request)
+        if request.get_method() == "PATCH":
+            raise urllib.error.HTTPError(
+                request.full_url, status, "", {}, io.BytesIO(b'{"message": "no ref"}')
+            )
+        if request.full_url.endswith("/git/commits/parent"):
+            return _Reply(b'{"tree": {"sha": "base"}}')
+        return _Reply(b'{"sha": "new-commit"}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", stub)
+    GitHubClient("token").commit_files(
+        "o", "r", "submission/glider", {"a.json": b"1"}, "msg", "parent"
+    )
+    assert [c.get_method() for c in calls][-2:] == ["PATCH", "POST"]
+    assert json.loads(calls[-1].data)["ref"] == "refs/heads/submission/glider"
+
+
 def test_unreachable_github_is_the_same_error_without_a_status(monkeypatch):
     """DNS down, connection refused, timeout: never a response, so no status.
     Same exception as a refusal, so app.py answers 502 rather than letting an

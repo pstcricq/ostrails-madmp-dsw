@@ -154,8 +154,14 @@ class GitHubClient:
 
     def _set_ref(self, owner: str, repo: str, branch: str, sha: str) -> None:
         """Point a branch at a commit, creating the reference when the branch
-        is not there. A 422 on the create is the race with another submission
-        of the same project, and the move that follows settles it."""
+        is not there.
+
+        The common case after a merged review is a branch that no longer
+        exists, the merge having deleted it, so the move failing is expected
+        rather than exceptional. GitHub answers 422 for a reference it cannot
+        move and 404 for one it cannot find, and which of the two it picks is
+        not worth depending on.
+        """
         quoted = quote(branch, safe="/")
         try:
             self._request(
@@ -164,7 +170,7 @@ class GitHubClient:
                 {"sha": sha, "force": True},
             )
         except GitHubError as e:
-            if e.status != 422:
+            if e.status not in (404, 422):
                 raise
             self._request(
                 "POST",
