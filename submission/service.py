@@ -1,5 +1,9 @@
 """The webhook's logic, free of HTTP plumbing.
 
+A submission is offered, not merged. It lands on a branch of its own and a
+pull request carries it, so the registry's default branch only ever holds
+documents a check has passed.
+
 Stateless: everything derives from the document, the folder and a small static
 config. Nothing here creates a repository or any scaffolding, the folder and
 its subdirectories are laid out beforehand from madmp-core.
@@ -22,7 +26,15 @@ _FOLDER_RE = re.compile(r"^[a-z0-9-]{1,64}$")
 # (!!) The registry's default branch, and part of every dmp_id this webhook
 # writes. A dmp_id is the DMP's stable identifier, so moving the registry to
 # another branch would leave every identifier ever issued pointing nowhere.
+#
+# A submitted DMP is not there yet, it waits on the branch below for its pull
+# request. The identifier is a promise, kept when that is merged.
 _BRANCH = "main"
+
+# One branch per project, not per submission. A researcher who submits five
+# times has one place to look, and the fifth replaces the fourth instead of
+# opening a fifth pull request nobody closes.
+_BRANCH_PREFIX = "submission/"
 
 # The key the document template renders beside `dmp`, carrying the versions
 # the document was built from.
@@ -117,15 +129,31 @@ def _stored(entry: dict | None) -> bytes | None:
     return base64.b64decode(entry.get("content") or "")
 
 
+def _pull_request_body(dmp_path: str, meta_path: str) -> str:
+    """What the pull request says to whoever opens it."""
+    return (
+        "Submitted from DSW by the maDMP submission webhook.\n"
+        "\n"
+        f"- `{dmp_path}`, the DMP, RDA DCS and nothing else\n"
+        f"- `{meta_path}`, the rules versions it was built from\n"
+        "\n"
+        "Quality control checks the DMP against those versions. A red check "
+        "means the document is to be fixed in DSW and submitted again, which "
+        "updates this pull request rather than opening another.\n"
+    )
+
+
 def handle_submission(
     document: Any, folder: str, github: GitHubClient, config: SubmissionConfig
 ) -> dict[str, Any]:
-    """Commit the DMP and its provenance into ``projects/<folder>/template/``
-    of the registry, and rewrite ``dmp_id``, in the document it is given, to
-    the DMP's raw URL. The two files go in one commit, so the registry never
-    holds a DMP whose versions are missing. Idempotent: an unchanged
-    submission commits nothing. Returns a small summary DSW shows as the
-    result."""
+    """Offer the DMP and its provenance for ``projects/<folder>/template/`` of
+    the registry, on a branch of their own and under one pull request per
+    project, and rewrite ``dmp_id``, in the document it is given, to the DMP's
+    raw URL on the default branch.
+
+    The two files go in one commit, so nothing ever holds a DMP whose versions
+    are missing. Idempotent: a submission that says what is already offered
+    commits nothing. Returns a small summary DSW shows as the result."""
     if not _FOLDER_RE.match(folder or ""):
         raise SubmissionError(f"invalid project folder {folder!r}")
     if not isinstance(document, dict) or not isinstance(document.get("dmp"), dict):
@@ -151,25 +179,53 @@ def handle_submission(
     document["dmp"]["dmp_id"] = {"identifier": raw_url, "type": "url"}
 
     wanted = {dmp_path: _bytes(document), meta_path: _bytes(envelope)}
-    current = {path: _stored(github.get_file(owner, repo, path)) for path in wanted}
+
+    # What this submission builds on, and what it is compared with. An open
+    # pull request means the branch holds a submission under review, so the
+    # next one continues it. Without one, the branch is either absent or left
+    # over from a review already merged, and the submission starts again from
+    # the default branch.
+    branch = f"{_BRANCH_PREFIX}{folder}"
+    pull = github.open_pull_request_for(owner, repo, branch)
+    head = github.branch_head(owner, repo, branch) if pull else None
+    parent = head or github.branch_head(owner, repo, _BRANCH)
+    if parent is None:
+        raise SubmissionError(f"{repo} has no {_BRANCH} branch to offer against")
+
+    read_ref = branch if head else _BRANCH
+    current = {
+        path: _stored(github.get_file(owner, repo, path, ref=read_ref))
+        for path in wanted
+    }
 
     if current == wanted:
         action = "unchanged"
     else:
         action = "created" if current[dmp_path] is None else "updated"
         verb = "Add" if action == "created" else "Update"
-        # Named after the folder: every project commits into the same repo, and
-        # `git log` shows the message before the path.
+        # Named after the folder: every project is offered through the same
+        # repository, and `git log` shows the message before the path.
         github.commit_files(
             owner,
             repo,
-            _BRANCH,
+            branch,
             wanted,
             f"{verb} DMP for {folder} (DSW submission)",
+            parent,
+        )
+        pull = github.open_pull_request(
+            owner,
+            repo,
+            branch,
+            _BRANCH,
+            f"Submit DMP for {folder}",
+            _pull_request_body(dmp_path, meta_path),
         )
 
     return {
         "repository": f"https://github.com/{owner}/{repo}/tree/{_BRANCH}/{base}",
+        "pull_request": pull["html_url"] if pull else None,
+        "branch": branch,
         "file": dmp_path,
         "metadata": meta_path,
         "action": action,

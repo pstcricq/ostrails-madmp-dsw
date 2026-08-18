@@ -1,4 +1,5 @@
-"""Thin GitHub client: reading a file, and committing several at once.
+"""Thin GitHub client: reading a file, committing several at once onto a
+branch, and opening the pull request that offers them.
 
 Synchronous and stdlib-only. The blocking call is the reason app.py hands
 handle_submission to a thread pool rather than awaiting it: run from the event
@@ -13,6 +14,7 @@ import json
 import urllib.error
 import urllib.request
 from typing import Any
+from urllib.parse import quote
 
 
 class GitHubError(RuntimeError):
@@ -67,19 +69,37 @@ class GitHubClient:
         except OSError as e:
             raise GitHubError(None, str(e)) from e
 
-    def get_file(self, owner: str, repo: str, path: str) -> dict[str, Any] | None:
+    def get_file(
+        self, owner: str, repo: str, path: str, ref: str | None = None
+    ) -> dict[str, Any] | None:
         """The file's contents entry ({sha, content base64, ...}), or None.
+
+        `ref` is the branch to read it on, the default branch when omitted.
 
         The one place a 404 reads as an absence. GitHub answers 404 for a
         repository the token cannot see too, so None means "not there, or not
         visible with this token".
         """
+        query = f"?ref={quote(ref, safe='')}" if ref else ""
         try:
-            return self._request("GET", f"/repos/{owner}/{repo}/contents/{path}")
+            return self._request("GET", f"/repos/{owner}/{repo}/contents/{path}{query}")
         except GitHubError as e:
             if e.status == 404:
                 return None
             raise
+
+    def branch_head(self, owner: str, repo: str, branch: str) -> str | None:
+        """The commit a branch points at, or None when there is no such
+        branch."""
+        try:
+            ref = self._request(
+                "GET", f"/repos/{owner}/{repo}/git/ref/heads/{quote(branch, safe='/')}"
+            )
+        except GitHubError as e:
+            if e.status == 404:
+                return None
+            raise
+        return ref["object"]["sha"]
 
     def commit_files(
         self,
@@ -88,29 +108,31 @@ class GitHubClient:
         branch: str,
         files: dict[str, bytes],
         message: str,
+        parent: str,
     ) -> str:
-        """Commit several files as one commit, and return its sha.
+        """Commit several files onto `branch`, over `parent`, and return the
+        new commit's sha. Creates the branch when it is not there.
 
         Four calls of the Git Data API, and only the last one writes: the
-        branch is read, a tree is built over the one it points at, a commit is
-        built over that tree, and the branch reference is moved onto it. The
-        files therefore all land or none does, where one call per file leaves
-        a submission half written when the second fails.
+        parent commit is read for its tree, a tree is built over it, a commit
+        is built over that tree, and the branch reference is created or moved
+        onto it. The files therefore all land or none does, where one call per
+        file leaves a submission half written when the second fails.
 
         `content` goes into the tree as text, so every file here must be
         UTF-8.
 
-        (!!) The reference is moved without `force`. A branch that moved
-        between the read and the move makes GitHub refuse, which is the
-        wanted answer: the write did not happen, and the caller is told.
+        (!!) The reference is moved with `force`. The caller decides what a
+        submission is built on, and starting a new one from the default branch
+        while the branch still holds a merged one is not a fast-forward.
+        Nothing is lost that a merged pull request did not already carry.
         """
-        head = self._request("GET", f"/repos/{owner}/{repo}/branches/{branch}")
-        parent = head["commit"]["sha"]
+        head = self._request("GET", f"/repos/{owner}/{repo}/git/commits/{parent}")
         tree = self._request(
             "POST",
             f"/repos/{owner}/{repo}/git/trees",
             {
-                "base_tree": head["commit"]["commit"]["tree"]["sha"],
+                "base_tree": head["tree"]["sha"],
                 "tree": [
                     {
                         "path": path,
@@ -127,9 +149,62 @@ class GitHubClient:
             f"/repos/{owner}/{repo}/git/commits",
             {"message": message, "tree": tree["sha"], "parents": [parent]},
         )
-        self._request(
-            "PATCH",
-            f"/repos/{owner}/{repo}/git/refs/heads/{branch}",
-            {"sha": commit["sha"]},
-        )
+        self._set_ref(owner, repo, branch, commit["sha"])
         return commit["sha"]
+
+    def _set_ref(self, owner: str, repo: str, branch: str, sha: str) -> None:
+        """Point a branch at a commit, creating the reference when the branch
+        is not there. A 422 on the create is the race with another submission
+        of the same project, and the move that follows settles it."""
+        quoted = quote(branch, safe="/")
+        try:
+            self._request(
+                "PATCH",
+                f"/repos/{owner}/{repo}/git/refs/heads/{quoted}",
+                {"sha": sha, "force": True},
+            )
+        except GitHubError as e:
+            if e.status != 422:
+                raise
+            self._request(
+                "POST",
+                f"/repos/{owner}/{repo}/git/refs",
+                {"ref": f"refs/heads/{branch}", "sha": sha},
+            )
+
+    def open_pull_request(
+        self, owner: str, repo: str, branch: str, base: str, title: str, body: str
+    ) -> dict[str, Any]:
+        """The open pull request offering `branch`, opened now or already
+        there.
+
+        One per project, reused: a researcher submitting five times has one
+        place to look, not five. GitHub answers 422 when one is already open
+        for that branch, which is why the listing is read after the refusal
+        rather than before, one call in the common case instead of two.
+        """
+        try:
+            return self._request(
+                "POST",
+                f"/repos/{owner}/{repo}/pulls",
+                {"title": title, "body": body, "head": branch, "base": base},
+            )
+        except GitHubError as refused:
+            if refused.status != 422:
+                raise
+            # 422 also covers a branch with nothing to offer, so the listing
+            # decides which of the two happened rather than the status alone.
+            existing = self.open_pull_request_for(owner, repo, branch)
+            if existing is None:
+                raise
+            return existing
+
+    def open_pull_request_for(
+        self, owner: str, repo: str, branch: str
+    ) -> dict[str, Any] | None:
+        """The open pull request whose head is `branch`, or None."""
+        head = quote(f"{owner}:{branch}", safe=":/")
+        found = self._request(
+            "GET", f"/repos/{owner}/{repo}/pulls?state=open&head={head}"
+        )
+        return found[0] if found else None

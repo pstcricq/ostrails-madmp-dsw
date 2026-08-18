@@ -145,6 +145,8 @@ async def submissions(request: Request) -> JSONResponse:
     # webhook worked, the service behind it did not.
     except GitHubError as e:
         raise HTTPException(502, str(e)) from e
-    # DSW displays the Location header as a clickable link on the
-    # submission, point it at the repository.
-    return JSONResponse(result, headers={"Location": result["repository"]})
+    # DSW displays the Location header as a clickable link on the submission,
+    # and it is the one thing the researcher is handed. Point it at the pull
+    # request carrying their DMP, at the folder when there is none to carry.
+    location = result["pull_request"] or result["repository"]
+    return JSONResponse(result, headers={"Location": location})

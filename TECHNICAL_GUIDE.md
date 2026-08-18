@@ -163,17 +163,33 @@ silence.
 
 **The DMP and its provenance are one commit.** The rendered document carries a
 `metadata` object beside `dmp`. The webhook takes it out, which purifies the
-DMP and yields the block in the same gesture, and commits both files through
-the Git Data API: the branch is read, a tree is built over it, a commit over
-that tree, and the branch reference is moved once. Nothing points at the tree
-or the commit until that move, so the two files land together or not at all.
-Two calls of the Contents API would leave a DMP whose rules versions are
-missing whenever the second fails, and there is no state here to repair it
-with.
+DMP and yields the block in the same gesture, and writes both files through
+the Git Data API: the parent commit is read for its tree, a tree is built over
+it, a commit over that tree, and the branch reference is moved once. Nothing
+points at the tree or the commit until that move, so the two files land
+together or not at all. Two calls of the Contents API would leave a DMP whose
+rules versions are missing whenever the second fails, and there is no state
+here to repair it with.
 
-The reference is moved without `force`, so a branch that moved in between makes
-GitHub refuse. That is the wanted answer, the write did not happen and the
-caller is told.
+**A submission is offered, not merged.** It lands on `submission/<folder>` and
+a pull request carries it, so the registry's default branch only ever holds
+documents its quality control has passed. What decides where a submission
+builds on is whether a pull request is open for that branch: with one, the
+branch holds a review in progress and the submission continues it, without
+one, the branch is absent or left over from a merged review and the submission
+starts again from the default branch. The comparison that makes a resubmission
+idempotent reads the same place, which is why `get_file` takes a ref.
+
+The reference is moved **with `force`**. Starting again from the default branch
+while the branch still holds a merged review is not a fast-forward, and nothing
+is lost that the merge did not already carry. This is the one place the webhook
+rewrites history, and it rewrites only its own branches.
+
+**One pull request per project, not per submission.** A researcher who submits
+five times has one place to look, and the fifth replaces the fourth. GitHub
+answers 422 both for a branch already under review and for a branch with
+nothing to offer, so the open list is read after the refusal, which tells the
+two apart and costs one call rather than two in the common case.
 
 **A 404 is an absence on a read and a failure on a write.** The transport
 raises on every error status, and `get_file` alone catches the 404 and reads it
@@ -200,8 +216,10 @@ the caller sent, so comparing strings turns a malformed token into a 500.
 
 **The registry branch is a named constant.** It ends up inside every `dmp_id`,
 which is the DMP's stable identifier, so moving the registry to another branch
-leaves every identifier ever issued pointing nowhere. It is also the reference
-a commit moves.
+leaves every identifier ever issued pointing nowhere. It is also what a
+submission is offered against, and what it starts again from. A `dmp_id` is
+written before the merge that makes it resolve, so it is a promise, and the
+pull request is what keeps it.
 
 **A malformed envelope is refused, never defaulted.** The project it names must
 be the folder the submission was routed to, which catches one project's
@@ -280,8 +298,9 @@ claiming to know better than the tool on a codebase that passes its defaults.
 
 **Idempotence stops above 1 MB.** GitHub's Contents API inlines a file's content
 up to 1 MB and answers with an empty `content` above that, and that read is how
-a submission is compared with what is stored. A DMP that large never compares
-equal, so every submission commits again instead of reporting `unchanged`.
+a submission is compared with what its review already offers. A DMP that large
+never compares equal, so every submission commits again instead of reporting
+`unchanged`.
 Nothing breaks, the guarantee quietly stops holding. Only the read is
 concerned, a commit carries its files as tree entries and has no such limit.
 

@@ -120,23 +120,36 @@ Two cases need a change in `docker-compose.yml` itself rather than in `.env`:
 
 DSW's Submit feature POSTs a rendered DMP to
 `http://submission:8080/submissions?project=<folder>` on the compose network, so
-the service needs no published port. The webhook commits into
-`projects/<folder>/template/` of the registry repository and rewrites the
-document's `dmp_id`, a DSW placeholder until then, to its stable raw URL.
+the service needs no published port. The webhook rewrites the document's
+`dmp_id`, a DSW placeholder until then, to its stable raw URL under
+`projects/<folder>/template/` of the registry repository.
 
-It commits **two files in one commit**. The rendered document carries a
+**A submission is offered, not merged.** It lands on `submission/<folder>`, a
+branch of its own, and a pull request carries it, so the registry's default
+branch only ever holds documents its quality control has passed. The `dmp_id`
+written above is therefore a promise, kept when that pull request is merged.
+
+One branch and one pull request **per project**, not per submission. A
+researcher who submits five times has one place to look, and the fifth
+replaces the fourth. A submission continues the review that is open, and
+starts again from the default branch when there is none.
+
+It offers **two files in one commit**. The rendered document carries a
 `metadata` object beside `dmp`, naming the project, the template version and
 the rules versions it was built from. The webhook takes that object out, so the
-DMP lands as RDA DCS alone, and writes it next to the DMP as
-`dmp_<folder>_template.meta.json`, in the same commit, so a DMP is never in the
-registry without the versions it must be checked against. A document that
+DMP is offered as RDA DCS alone, and writes it next to the DMP as
+`dmp_<folder>_template.meta.json`, in the same commit, so a DMP is never
+anywhere without the versions it must be checked against. A document that
 carries no such object is refused: its rules versions are unknown, and guessing
 them is worse than saying so.
 
 It creates nothing. A folder with no `template/.gitkeep` is refused rather than
 half built, the folder being laid out beforehand from madmp-core.
 
-Submitting the same DMP twice commits nothing the second time.
+Submitting the same DMP twice offers nothing the second time.
+
+The token it commits with needs `Contents: Read and write` **and
+`Pull requests: Read and write`** on the registry repository.
 
 The container needs **outbound HTTPS to `api.github.com`**, which is the one
 thing in this deployment that reaches outside the host. Everything else talks
@@ -151,7 +164,7 @@ What it answers:
 
 | | |
 |---|---|
-| 200 | with `action` being `created`, `updated` or `unchanged`, and a `Location` header DSW shows as a link |
+| 200 | with `action` being `created`, `updated` or `unchanged`, and a `Location` header DSW shows as a link, pointing at the pull request |
 | 400 | the folder is missing, unsafe, or not laid out, or the body is not a DMP carrying its `metadata` object |
 | 401 | wrong or missing token |
 | 502 | GitHub refused the call, or could not be reached |
