@@ -1,24 +1,19 @@
 #!/usr/bin/env bash
-# Brings the DSW stack up and reports what it runs with. It writes nothing: .env
-# is filled by hand, so this reads it, states what compose will resolve, then
-# runs the two commands a deployment needs:
+# Reports the configuration compose will resolve, brings the DSW stack up, then
+# creates the bucket. It writes nothing and can be re-run. The two commands it
+# wraps:
 #
 #   docker compose up -d --wait
 #   docker compose run --rm createbucket
-#
-# Both can be repeated, so this script can too.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Reached through the published port, which is bound to the loopback. This
-# script runs on the host, so this address holds even where the browser uses a
-# different one.
+# The API as this host reaches it, which is not necessarily API_URL.
 API="http://127.0.0.1:3000/wizard-api"
 DEMO_EMAIL="albert.einstein@example.com"
 DEMO_PASSWORD="password"
 
-# Printed with their value. None is a secret, and this is where a laptop URL
-# left in a server's .env becomes visible.
+# Printed with their value. None is a secret.
 SHOWN="DSW_VERSION MADMP_CORE_VERSION POSTGRES_VERSION MINIO_VERSION MC_VERSION
        POSTGRES_DB POSTGRES_USER MINIO_ROOT_USER
        API_URL CLIENT_URL S3_URL S3_BUCKET
@@ -30,10 +25,8 @@ SECRET="POSTGRES_PASSWORD MINIO_ROOT_PASSWORD SUBMISSION_TOKEN REGISTRY_TOKEN
 
 # --- helpers ----------------------------------------------------------------
 
-# The value compose will use. Its rule, not ours: the environment wins over
-# .env, so a name exported in the shell reaches the containers while .env still
-# shows something else. Reading .env alone would report a value the stack never
-# sees.
+# The value compose will use. The environment wins over .env, so reading the
+# file alone would report a value the stack never sees.
 value_of() {
   if [ -n "${!1:-}" ]; then printf '%s' "${!1}"; return; fi
   sed -n "s/^$1=//p" .env | head -1 | tr -d '"'
@@ -51,9 +44,9 @@ if [ ! -f .env ]; then
 fi
 
 # --- 2. Can compose read it? ------------------------------------------------
-# One line, and it catches what a key-by-key report cannot: a multi-line value
-# left without its quotes makes compose read every following line as a new
-# variable, and no single key looks wrong.
+# Catches what the key-by-key report below cannot: a multi-line value left
+# without its quotes, which makes compose read every following line as a new
+# variable.
 if ! docker compose config --quiet 2>/dev/null; then
   echo "error: docker compose cannot read .env:" >&2
   docker compose config --quiet 2>&1 | sed 's/^/  /' >&2
@@ -83,9 +76,8 @@ for key in $SECRET; do
   fi
 done
 
-# Keys .env.example has gained since this .env was written. Reported rather than
-# copied: a script has no business writing in a file of secrets, and the value
-# would have to be filled in by hand anyway.
+# Keys .env.example has gained since this .env was written. Reported, never
+# copied in.
 absent=""
 while IFS= read -r line; do
   case "$line" in ''|'#'*) continue ;; *=*) ;; *) continue ;; esac
@@ -105,8 +97,7 @@ if [ -n "$missing" ]; then
 fi
 
 # --- 4. The stack -----------------------------------------------------------
-# --wait returns once every healthcheck passes, not once the containers exist,
-# so nothing below has to poll the API.
+# --wait returns once every healthcheck passes, not once the containers exist.
 echo ""
 echo "Starting the stack..."
 docker compose up -d --wait || {
@@ -115,9 +106,8 @@ docker compose up -d --wait || {
 }
 
 # --- 5. The bucket ----------------------------------------------------------
-# DSW does not create it: in the S3 API, CreateBucket and PutObject are separate
-# operations, and writing to a missing bucket returns NoSuchBucket. Repeating it
-# is free, `mc mb --ignore-existing` says so.
+# DSW does not create the bucket itself. Repeating this is free, the service
+# runs `mc mb --ignore-existing`.
 docker compose run --rm createbucket
 
 # --- 6. Summary -------------------------------------------------------------
@@ -127,8 +117,8 @@ echo " DSW is up."
 echo " Client : $(value_of CLIENT_URL)"
 echo " API    : $(value_of API_URL)"
 
-# Only warned about when the account really answers, so the message means
-# something. DSW seeds three of them and their password is published.
+# Warned about only when the account really answers. DSW seeds three of them,
+# with a published password.
 if curl -fs -o /dev/null -X POST "$API/tokens" -H 'Content-Type: application/json' \
      -d "{\"email\":\"$DEMO_EMAIL\",\"password\":\"$DEMO_PASSWORD\"}" 2>/dev/null; then
   echo ""
