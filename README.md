@@ -2,15 +2,17 @@
 
 A Data Stewardship Wizard 4.31 deployment for the maDMP project, plus one
 service that is not DSW's: the **submission webhook**, which commits a rendered
-DMP into the registry repository. It carries no code of its own. The webhook is
-built and published by
-[madmp-core](https://github.com/pstcricq/ostrails-madmp-core), and what is here
-is the image tag, the four variables and the compose service that runs it.
+DMP into the registry repository.
+
+This repository carries no application code. The webhook is built and published
+by [madmp-core](https://github.com/pstcricq/ostrails-madmp-core), and what is
+here is the image tag, the four variables and the compose service that runs it.
 
 It starts from the [official deployment
 example](https://github.com/ds-wizard/dsw-deployment-example) at its 4.31
 release, kept as the `upstream` remote. What differs from it is listed at the
-end of this file, and why it differs is in [TECHNICAL_GUIDE.md](TECHNICAL_GUIDE.md).
+end of this file. **Why any of it is the way it is** is in madmp-core's
+`doc.md`, section 11.
 
 ## Quick start
 
@@ -43,10 +45,10 @@ then twelve seconds. On a machine that already has the images, twelve seconds.
 | MinIO console | http://localhost:9001 |
 
 **Enter through `/wizard`, not through the bare origin.** The client image
-redirects `/` to an absolute `http://` address built from the protocol nginx
-itself listens on, so behind a TLS terminator the browser is sent to `http` on a
-host that only serves `https`. Behind your own reverse proxy the fix belongs
-there, with `proxy_redirect http:// https://` or a root redirect of its own.
+redirects `/` to an absolute `http://` address, so behind a TLS terminator the
+browser is sent to `http` on a host that only serves `https`. Behind your own
+reverse proxy, fix it there with `proxy_redirect http:// https://` or a root
+redirect.
 
 ## What runs
 
@@ -72,30 +74,28 @@ the containers exist.
 **`.env` is the single source of truth, and it is filled by hand.** There is no
 `application.yml` and no script that generates anything.
 
-DSW resolves every setting from the environment before reading its config file,
-so `docker-compose.yml` composes DSW's own settings out of the values in `.env`.
+`docker-compose.yml` composes DSW's own settings out of the values in `.env`.
 The variable names are the `application.yml` paths in upper case:
 `general.clientUrl` is `GENERAL_CLIENT_URL`, `s3.url` is `S3_URL`.
 
-Twenty values, in two groups:
+Twenty values, in five blocks, one per thing configured, each opening on the
+version of the image that runs it:
 
-- **twelve carry a working value**: the five image versions, the database name,
-  the two usernames, the bucket, and the three URLs of a local deployment
-- **eight are empty**: the two passwords, the two DSW signing secrets, and the
-  webhook's four variables. `.env.example` says what each one is and gives the
-  command that produces it where there is one
+| block | values |
+|---|---|
+| Data Stewardship Wizard | `DSW_VERSION`, and the two signing secrets |
+| Database | `POSTGRES_VERSION`, the name, the account, the password |
+| Object storage | `MINIO_VERSION`, `MC_VERSION`, the account, the bucket |
+| Submission webhook | `MADMP_CORE_VERSION`, and the webhook's four variables |
+| The three URLs | `API_URL`, `CLIENT_URL`, `S3_URL` |
 
-The five image versions include `MADMP_CORE_VERSION`, which is not a
-dependency's version but the webhook's, and the one value here that decides
-which engine and which rules a submitted DMP is judged by.
+Twelve carry a working value, eight are empty. `.env.example` says what each one
+is and gives the command that produces it where there is one.
 
 `scripts/setup.sh` reports every value it finds, where it comes from, and stops
-if one is missing. Secrets are reported as `set`, never printed.
-
-Compose lets the environment win over `.env`. A name exported in the shell, or
-provided by whatever runs the containers, therefore reaches them while `.env`
-still shows something else. That is why the script reports the origin of each
-value rather than reading the file alone.
+if one is missing. Secrets are reported as `set`, never printed. It reports the
+value **compose will use**: a name exported in the shell reaches the containers
+while `.env` still shows something else.
 
 ## Deploying somewhere else
 
@@ -110,11 +110,8 @@ S3_URL=...
 
 The `/wizard` and `/wizard-api` paths are what lets both live under one domain,
 with a reverse proxy routing the first to port 8080 and the second to port 3000.
-
-`S3_URL` is the awkward one. The browser downloads documents straight from
-MinIO through a presigned URL, so MinIO needs a public address of its own. A
-subdomain is simpler than a path: MinIO puts the bucket name in the path, so
-proxying it under `/s3` means rewriting URLs.
+`S3_URL` needs a public address of its own, and a subdomain is simpler than a
+path.
 
 Two cases need a change in `docker-compose.yml` itself rather than in `.env`:
 
@@ -125,62 +122,14 @@ Two cases need a change in `docker-compose.yml` itself rather than in `.env`:
 
 ## The submission webhook
 
-**Neither the webhook nor its image is in this repository.** Both live in
-[madmp-core](https://github.com/pstcricq/ostrails-madmp-core), next to the
-rules the webhook checks a document against, and that repository's CI publishes
-the image on every version tag. What is here is the deployment: the compose
-service, its four variables, and the tag it pulls.
-
 DSW's Submit feature POSTs a rendered DMP to
 `http://submission:8080/submissions?project=<folder>` on the compose network, so
 the service needs no published port.
 
-**The document is checked before it is committed.** It carries a `metadata`
-object beside `dmp`, naming the rules versions it was built from, and the
-webhook merges those rules and runs madmp-core's engine over it. A document
-that does not hold up is refused with a `422` naming the first few violations,
-and never reaches the registry, so the researcher reads why while still in
-DSW.
-
-What passes is committed as **three files in one commit**: the DMP as RDA DCS
-alone, that `metadata` object beside it, and the verdict it got. The `dmp_id`,
-a DSW placeholder until then, is rewritten to the DMP's stable raw URL.
-
-It creates nothing. A folder with no `template/.gitkeep` is refused rather than
-half built, the folder being laid out beforehand from madmp-core's CI.
-
-Submitting the same DMP twice commits nothing the second time.
-
-The token it commits with needs `Contents: Read and write` on the registry
-repository, and nothing else.
-
-Nothing is built here. The image comes from
-`ghcr.io/pstcricq/ostrails-madmp-core/submission`, at the tag
-`MADMP_CORE_VERSION` names in `.env`. Bumping that one value is how a
-deployment moves to a newer engine or newer rules, and it is the only thing
-here that decides which madmp-core is in use:
-
-```bash
-docker compose pull submission && docker compose up -d submission
-```
-
-The package is private for as long as madmp-core is, so the host has to be
-logged in to pull it. Once, with a token carrying `read:packages`:
-
-```bash
-docker login ghcr.io -u <github-user>
-```
-
-Without it the pull fails with a 401 that reads like the image does not exist.
-
-The container needs **outbound HTTPS to `api.github.com`**, which is the one
-thing in this deployment that reaches outside the host. Everything else talks
-on the compose network.
-
-Wiring it up in DSW means declaring a submission service with two things: the
-URL above, carrying the project's folder in its query string, and one static
-header, `Authorization: Bearer <SUBMISSION_TOKEN>`. madmp-core's `dsw.publish
-submission` writes that configuration through the API.
+The document is checked against the rules it names before it is committed. What
+passes is committed as three files in one commit: the DMP as RDA DCS alone, the
+`metadata` object naming the versions it was built from, and the verdict it got.
+What does not is refused with a `422` and never reaches the registry.
 
 What it answers:
 
@@ -196,14 +145,42 @@ Four variables, and they are the whole contract:
 
 | | |
 |---|---|
-| `SUBMISSION_TOKEN` | the shared secret above |
+| `SUBMISSION_TOKEN` | the shared secret DSW sends as `Authorization: Bearer ...` |
 | `REGISTRY_TOKEN` | fine-grained PAT, Contents RW on the registry repo |
 | `REGISTRY_OWNER`, `REGISTRY_REPO` | where the registry lives |
 
 They are read once, at startup. An incomplete `.env` leaves the container
 restarting in a loop, and `docker compose logs submission` names what is
-missing, rather than the webhook answering `/health` and failing on the first
-real submission.
+missing.
+
+The container needs **outbound HTTPS to `api.github.com`**.
+
+### Its image
+
+Nothing is built here. The image comes from
+`ghcr.io/pstcricq/ostrails-madmp-core/submission`, at the tag
+`MADMP_CORE_VERSION` names in `.env`. Bumping that one value is how a deployment
+moves to a newer engine or newer rules:
+
+```bash
+docker compose pull submission && docker compose up -d submission
+```
+
+The package is private for as long as madmp-core is, so the host has to be
+logged in to pull it. Once, with a token carrying `read:packages`:
+
+```bash
+docker login ghcr.io -u <github-user>
+```
+
+Without it the pull fails with a 401 that reads like the image does not exist.
+
+### Wiring it up in DSW
+
+A submission service is declared with two things: the URL above, carrying the
+project's folder in its query string, and one static header,
+`Authorization: Bearer <SUBMISSION_TOKEN>`. madmp-core writes that configuration
+through the DSW API.
 
 ## Accounts
 
@@ -238,16 +215,6 @@ docker compose down -v                 # removes the data too
 Inspecting the database needs no published port, `exec` goes through the Docker
 daemon rather than the network.
 
-## Working on the webhook
-
-Not here. Its code, its tests and its image are in madmp-core, and it is
-checked where it lives. What reaches this repository is a tag in `.env`.
-
-CI here runs the three checks this repository can answer without deploying:
-that the compose file resolves against `.env.example`, that `scripts/setup.sh`
-passes shellcheck, and that the workflows pass actionlint. Whether a deployment
-is *correct* only shows on a real host, and nothing here pretends otherwise.
-
 ## Layout
 
 ```
@@ -257,21 +224,25 @@ scripts/setup.sh            reports the configuration, then brings the stack up
 .github/workflows/ci.yml    three checks on the deployment files
 ```
 
+CI runs `docker compose config` against `.env.example`, shellcheck on the setup
+script, and actionlint on the workflows. Nothing is built, pulled or deployed
+there.
+
 ## What differs from upstream
 
 - configuration comes from `.env` through the environment, and
   `config/application.yml` is gone along with its published signing secrets
 - the compose project name is pinned, so container and volume names survive a
   folder rename
-- named volumes are enabled. Without them `docker compose down` destroys the
-  database and the bucket
-- healthchecks on Postgres and on the server, the second replacing one that
-  could not report healthy in under five minutes
+- named volumes are enabled
+- healthchecks on Postgres and on the server, the second replacing the image's
+  own
+- `platform: linux/amd64` on the server, which is published for amd64 only
 - Postgres is not published, and MinIO is bound to the loopback
 - the bucket is created by a compose service under a profile, replacing a script
-  that guessed its network and asked for an `mc` image tag that does not exist
-- the mailer is commented out, having nothing to process while mail is disabled
+- the mailer is commented out
 - upstream's `.github` is removed, those workflows monitor DSW's own images
+- the submission service is added, which upstream has no equivalent of
 
 ## License
 

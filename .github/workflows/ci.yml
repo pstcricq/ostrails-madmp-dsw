@@ -1,5 +1,5 @@
 # Three checks on the deployment files, each with the tool that reads them.
-# Nothing is built, pulled or deployed.
+# Nothing is built, pulled or deployed here.
 name: CI
 
 on:
