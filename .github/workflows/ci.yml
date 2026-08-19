@@ -34,8 +34,7 @@ jobs:
 
       # Both tools ship with the runner, so these cost nothing to run and catch
       # what would otherwise surface on a server: a compose file that no longer
-      # parses, a variable that resolves to nothing, a quoting mistake in the
-      # one script a deployment runs.
+      # parses, and a quoting mistake in the one script a deployment runs.
       #
       # Nothing is built and nothing is pulled.
       #
