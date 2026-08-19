@@ -5,10 +5,11 @@
 #
 #   docker compose up -d --wait
 #   docker compose run --rm createbucket
+
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# The API as this host reaches it, which is not necessarily API_URL.
+# The API, as reached from this host.
 API="http://127.0.0.1:3000/wizard-api"
 DEMO_EMAIL="albert.einstein@example.com"
 DEMO_PASSWORD="password"
@@ -106,8 +107,7 @@ docker compose up -d --wait || {
 }
 
 # --- 5. The bucket ----------------------------------------------------------
-# DSW does not create the bucket itself. Repeating this is free, the service
-# runs `mc mb --ignore-existing`.
+# DSW does not create the bucket itself. Repeating this is free.
 docker compose run --rm createbucket
 
 # --- 6. Summary -------------------------------------------------------------
@@ -117,8 +117,7 @@ echo " DSW is up."
 echo " Client : $(value_of CLIENT_URL)"
 echo " API    : $(value_of API_URL)"
 
-# Warned about only when the account really answers. DSW seeds three of them,
-# with a published password.
+# Warned about only when the account really answers.
 if curl -fs -o /dev/null -X POST "$API/tokens" -H 'Content-Type: application/json' \
      -d "{\"email\":\"$DEMO_EMAIL\",\"password\":\"$DEMO_PASSWORD\"}" 2>/dev/null; then
   echo ""
