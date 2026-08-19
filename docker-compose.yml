@@ -118,8 +118,15 @@ services:
   # maDMP submission webhook (DSW Submit -> dmp-registry on GitHub). Source in
   # ./submission. DSW reaches it by service name on the compose network
   # (http://submission:8080), so it needs no published port.
+
   submission:
-    build: ./submission
+    build:
+      context: ./submission
+      # Read at build time to install madmp-core, which is private, and never
+      # written into a layer: a build argument would be readable in the image
+      # history by anyone who pulls it.
+      secrets:
+        - madmp_core_token
     restart: always
     # Listed one by one rather than `env_file: .env`, so the webhook holds its
     # own four variables and none of the stack's other secrets.
@@ -149,6 +156,8 @@ services:
   postgres:
     image: postgres:${POSTGRES_VERSION}
     restart: always
+    # ports:
+    #   - 127.0.0.1:5432:5432
     # Not published: nothing on the host calls it. Containers reach it as
     # postgres:5432, and inspecting it goes through the Docker daemon:
     #
@@ -171,7 +180,11 @@ services:
     # answers, and the check would go green before the database accepts a single
     # TCP connection. The `$$` leave both names to the container's shell.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      test:
+        [
+          "CMD-SHELL",
+          'pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"',
+        ]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -239,3 +252,10 @@ services:
 volumes:
   db-data:
   s3-data:
+
+# Build-time only, and only for the webhook's image. `MADMP_CORE_TOKEN` reads
+# madmp-core for as long as it is private, a fine-grained token with
+# Contents: Read on it and nothing else.
+secrets:
+  madmp_core_token:
+    environment: MADMP_CORE_TOKEN

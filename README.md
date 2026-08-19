@@ -118,38 +118,46 @@ Two cases need a change in `docker-compose.yml` itself rather than in `.env`:
 
 ## The submission webhook
 
+**The webhook is not in this repository.** It lives in
+[madmp-core](https://github.com/pstcricq/ostrails-madmp-core), next to the
+rules it checks a document against, and the image installs it from there at a
+pinned version. What is here is the deployment: the compose service, its four
+variables, and the one build secret that reads that private repository.
+
 DSW's Submit feature POSTs a rendered DMP to
 `http://submission:8080/submissions?project=<folder>` on the compose network, so
-the service needs no published port. The webhook rewrites the document's
-`dmp_id`, a DSW placeholder until then, to its stable raw URL under
-`projects/<folder>/template/` of the registry repository.
+the service needs no published port.
 
-**A submission is offered, not merged.** It lands on `submission/<folder>`, a
-branch of its own, and a pull request carries it, so the registry's default
-branch only ever holds documents its quality control has passed. The `dmp_id`
-written above is therefore a promise, kept when that pull request is merged.
+**The document is checked before it is committed.** It carries a `metadata`
+object beside `dmp`, naming the rules versions it was built from, and the
+webhook merges those rules and runs madmp-core's engine over it. A document
+that does not hold up is refused with a `422` naming the first few violations,
+and never reaches the registry, so the researcher reads why while still in
+DSW.
 
-One branch and one pull request **per project**, not per submission. A
-researcher who submits five times has one place to look, and the fifth
-replaces the fourth. A submission continues the review that is open, and
-starts again from the default branch when there is none.
-
-It offers **two files in one commit**. The rendered document carries a
-`metadata` object beside `dmp`, naming the project, the template version and
-the rules versions it was built from. The webhook takes that object out, so the
-DMP is offered as RDA DCS alone, and writes it next to the DMP as
-`dmp_<folder>_template.meta.json`, in the same commit, so a DMP is never
-anywhere without the versions it must be checked against. A document that
-carries no such object is refused: its rules versions are unknown, and guessing
-them is worse than saying so.
+What passes is committed as **three files in one commit**: the DMP as RDA DCS
+alone, that `metadata` object beside it, and the verdict it got. The `dmp_id`,
+a DSW placeholder until then, is rewritten to the DMP's stable raw URL.
 
 It creates nothing. A folder with no `template/.gitkeep` is refused rather than
-half built, the folder being laid out beforehand from madmp-core.
+half built, the folder being laid out beforehand from madmp-core's CI.
 
-Submitting the same DMP twice offers nothing the second time.
+Submitting the same DMP twice commits nothing the second time.
 
-The token it commits with needs `Contents: Read and write` **and
-`Pull requests: Read and write`** on the registry repository.
+The token it commits with needs `Contents: Read and write` on the registry
+repository, and nothing else.
+
+Building the image needs a second one, `MADMP_CORE_TOKEN`, with
+`Contents: Read` on madmp-core, for as long as that repository is private. It
+is read once, as a BuildKit secret, and is in no layer of what runs:
+
+```bash
+MADMP_CORE_TOKEN=... docker compose build submission
+```
+
+Which version it installs is `MADMP_CORE_VERSION` in `submission/Dockerfile`.
+Bumping it is how a deployment moves to a newer engine or newer rules, and it
+is the only thing here that decides which madmp-core is in use.
 
 The container needs **outbound HTTPS to `api.github.com`**, which is the one
 thing in this deployment that reaches outside the host. Everything else talks
@@ -164,8 +172,9 @@ What it answers:
 
 | | |
 |---|---|
-| 200 | with `action` being `created`, `updated` or `unchanged`, and a `Location` header DSW shows as a link, pointing at the pull request |
+| 200 | with `action` being `created`, `updated` or `unchanged`, and a `Location` header DSW shows as a link to the folder |
 | 400 | the folder is missing, unsafe, or not laid out, or the body is not a DMP carrying its `metadata` object |
+| 422 | the DMP does not hold up against the rules it names |
 | 401 | wrong or missing token |
 | 502 | GitHub refused the call, or could not be reached |
 

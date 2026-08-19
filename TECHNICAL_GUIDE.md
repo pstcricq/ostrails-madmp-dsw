@@ -8,10 +8,11 @@ something is believed rather than verified, it says so.
 
 ## 1. Scope
 
-A deployment plus one small application. No maDMP rules, no quality checks,
-nothing from `madmp-core`: the webhook receives a document that is already
-rendered and commits it. That boundary is what keeps the whole thing under a
-thousand lines.
+**A deployment, and nothing else.** No maDMP rules, no quality checks, no
+application code: the webhook that receives a rendered document, checks it and
+commits it lives in `madmp-core`, and this repository installs it. It held that
+code from 10/08/2026 until 19/08/2026, and giving it back is what makes this
+boundary true again rather than nearly true.
 
 The upstream deployment example is kept as the `upstream` remote so later DSW
 releases can be compared, not merged.
@@ -144,93 +145,35 @@ the same secrets.
 
 ## 6. The webhook
 
-**Flat modules.** `app.py`, `service.py`, `github_client.py`, no package. That
-is how they are laid out inside the image, and the tests import them the same
-way, so nothing depends on a layout the container does not have.
+**Its code is not here.** It lives in madmp-core, and the image installs it
+from there at a pinned version. The check it runs on a submitted document needs
+that repository's engine and its rules files, and pinning one version pins
+both: a document is checked by the release the image names, and the verdict
+committed beside it in the registry says which.
 
-**Configuration read once, at startup.** A misconfigured webhook refuses to
+What stays here is the deployment: the compose service, the four variables it
+passes, the healthcheck, and the build secret. That is the same line as for
+every other service in this file.
+
+**Configuration is read once, at startup.** A misconfigured webhook refuses to
 start. Reading the variables per request lets it answer `/health` and fail on
 the first real submission, which is the moment nobody is watching. Missing and
 empty are treated alike because compose always defines what its `environment:`
 block lists: a value absent from `.env` arrives as an empty string, not as a
-missing variable. All four are reported together, so a fresh deployment is fixed
-in one pass rather than one restart per variable.
+missing variable.
 
 **`REGISTRY_` rather than `GITHUB_`.** Compose lets the shell override `.env`,
 and `GITHUB_TOKEN` is a name a developer's shell very often already holds. The
 collision would have the webhook commit with someone else's credentials, in
 silence.
 
-**The DMP and its provenance are one commit.** The rendered document carries a
-`metadata` object beside `dmp`. The webhook takes it out, which purifies the
-DMP and yields the block in the same gesture, and writes both files through
-the Git Data API: the parent commit is read for its tree, a tree is built over
-it, a commit over that tree, and the branch reference is moved once. Nothing
-points at the tree or the commit until that move, so the two files land
-together or not at all. Two calls of the Contents API would leave a DMP whose
-rules versions are missing whenever the second fails, and there is no state
-here to repair it with.
+**The build token is a BuildKit secret, never a build argument.** An argument
+is readable in the image history by anyone who pulls it, and this one reads a
+private repository. Two stages, so neither git nor the token is in what runs,
+and `docker history` shows neither.
 
-**A submission is offered, not merged.** It lands on `submission/<folder>` and
-a pull request carries it, so the registry's default branch only ever holds
-documents its quality control has passed. What decides where a submission
-builds on is whether a pull request is open for that branch: with one, the
-branch holds a review in progress and the submission continues it, without
-one, the branch is absent or left over from a merged review and the submission
-starts again from the default branch. The comparison that makes a resubmission
-idempotent reads the same place, which is why `get_file` takes a ref.
-
-The reference is moved **with `force`**. Starting again from the default branch
-while the branch still holds a merged review is not a fast-forward, and nothing
-is lost that the merge did not already carry. This is the one place the webhook
-rewrites history, and it rewrites only its own branches.
-
-**One pull request per project, not per submission.** A researcher who submits
-five times has one place to look, and the fifth replaces the fourth. GitHub
-answers 422 both for a branch already under review and for a branch with
-nothing to offer, so the open list is read after the refusal, which tells the
-two apart and costs one call rather than two in the common case.
-
-**A 404 is an absence on a read and a failure on a write.** The transport
-raises on every error status, and `get_file` alone catches the 404 and reads it
-as an absence. Reading it as an absence in the transport would mean a write
-GitHub refused, for a revoked token, a renamed repository or a wrong
-`REGISTRY_OWNER`, returns nothing instead of raising, and the webhook answers
-200 with `"action": "created"` and a link to a file that was never written. DSW
-would display a successful submission and the DMP would be lost silently.
-
-GitHub also answers 404 for a repository the token cannot see, so an absence
-means "not there, or not visible with this token", which is why the error about
-an uninitialized folder mentions both.
-
-**Blocking I/O goes to a thread pool.** The GitHub client is synchronous and
-stdlib-only, and the endpoint has to be `async` to read the request body.
-FastAPI only moves `def` endpoints to a thread pool, not `async def` ones, so
-awaiting the call directly freezes the event loop, and with it `/health`, for up
-to the 30 second timeout.
-
-**The token is compared with `hmac.compare_digest`, on bytes.** Constant time
-removes a timing attack that is theoretical here but free to close. Bytes are
-required: `compare_digest` refuses non-ASCII strings, and the header is whatever
-the caller sent, so comparing strings turns a malformed token into a 500.
-
-**The registry branch is a named constant.** It ends up inside every `dmp_id`,
-which is the DMP's stable identifier, so moving the registry to another branch
-leaves every identifier ever issued pointing nowhere. It is also what a
-submission is offered against, and what it starts again from. A `dmp_id` is
-written before the merge that makes it resolve, so it is a promise, and the
-pull request is what keeps it.
-
-**A malformed envelope is refused, never defaulted.** The project it names must
-be the folder the submission was routed to, which catches one project's
-document submitted through another's service, and its pins must be a non-empty
-list of one-key mappings of strings, the shape quality control resolves into
-file paths. A DMP whose rules versions are unknown cannot be checked against
-them.
-
-**No GitHub account is named in the repository.** `REGISTRY_OWNER` and
-`REGISTRY_REPO` ship empty. The tests use fixed values because they need
-something, and they are the only place a name appears.
+**Outbound HTTPS to `api.github.com`** is the one thing in this deployment that
+reaches outside the host. Everything else talks on the compose network.
 
 ## 7. The image
 
@@ -283,26 +226,27 @@ deployment files **parse and resolve**. It cannot tell whether a deployment is
 **correct**, which only shows on a real host. Claiming otherwise would be worse
 than checking nothing.
 
-`uv sync --frozen` means the committed lockfile decides the versions, so a
-transitive release cannot turn CI red on its own. The token is reduced to
+There is no Python left to lint or test here. The webhook is checked where it
+lives, in madmp-core, and what remains is a compose file, a script and the
+workflows, each with the tool that reads it. The token is reduced to
 `contents: read`, and the job has a timeout, since a stuck job holds a runner
 for six hours by default.
-
-Ruff runs on its default rule set, deliberately. Measured on version 0.16.2:
-413 rules are active by default, including import order, the whole `UP` family
-and 58 bugbear rules. The `B9xx` rules, which flake8-bugbear itself classes as
-opinionated, are not among them. Adding a `select` to reach them would mean
-claiming to know better than the tool on a codebase that passes its defaults.
 
 ## 10. Known limits
 
 **Idempotence stops above 1 MB.** GitHub's Contents API inlines a file's content
 up to 1 MB and answers with an empty `content` above that, and that read is how
-a submission is compared with what its review already offers. A DMP that large
-never compares equal, so every submission commits again instead of reporting
-`unchanged`.
-Nothing breaks, the guarantee quietly stops holding. Only the read is
-concerned, a commit carries its files as tree entries and has no such limit.
+a submission is compared with what the registry holds. A DMP that large never
+compares equal, so every submission commits again instead of reporting
+`unchanged`. Nothing breaks, the guarantee quietly stops holding. Only the read
+is concerned, a commit carries its files as tree entries and has no such limit.
+
+**The image's dependencies are resolved at build time, not locked.** The
+webhook used to install from a hash-pinned `requirements.txt` generated from a
+lockfile. Installing madmp-core from a tag pins that repository exactly and
+leaves its transitive dependencies to pip, so two builds of the same
+`MADMP_CORE_VERSION` can differ. What would close it is madmp-core publishing a
+hashed requirements file with its releases, and nothing needs it yet.
 
 **No retry and no rate-limit handling.** GitHub answering 403 or 429 surfaces as
 a 502 to DSW. Acceptable for one instance submitting occasionally.
