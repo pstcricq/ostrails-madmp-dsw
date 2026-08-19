@@ -1,9 +1,5 @@
-# One job over what this repository can check without deploying: whether the
-# deployment files parse and resolve. Whether a deployment is *correct* only
-# shows on a real host, and nothing here pretends otherwise.
-#
-# There is no Python left to check. The webhook is installed from madmp-core,
-# which lints and tests it where it lives.
+# Three checks on the deployment files, each with the tool that reads them.
+# Nothing is built, pulled or deployed.
 name: CI
 
 on:
@@ -12,13 +8,11 @@ on:
   pull_request:
   workflow_dispatch:
 
-# These are pure checks, nothing here writes anywhere, so the token gets the
-# least it can hold.
+# Read-only, nothing here writes.
 permissions:
   contents: read
 
-# Cancel a superseded run rather than queue it. The only cost of stopping one is
-# the seconds it had already spent.
+# A new run cancels the one it supersedes.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -26,24 +20,12 @@ concurrency:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    # A stuck job holds a runner for six hours by default. Nothing here takes
-    # more than one minute.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
-      # Both tools ship with the runner, so these cost nothing to run and catch
-      # what would otherwise surface on a server: a compose file that no longer
-      # parses, and a quoting mistake in the one script a deployment runs.
-      #
-      # Nothing is built and nothing is pulled.
-      #
-      # (!!) This catches a file that no longer parses, and not a variable
-      # missing from .env.example: compose warns on an undefined variable,
-      # substitutes an empty string and exits 0. Measured, not assumed. What
-      # actually guards that is `scripts/setup.sh`, which reports every value as
-      # MISSING and refuses to start, and names the keys .env.example has gained
-      # since an .env was written.
+      # Parses docker-compose.yml and resolves it against .env.example. A
+      # variable that file does not carry is a warning here, not a failure.
       - name: The compose file resolves
         run: docker compose --env-file .env.example config --quiet
       - name: The deployment script
