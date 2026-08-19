@@ -1,22 +1,16 @@
-# Pinned so containers, volumes and the compose network keep their names whatever
-# the folder is called.
+# Pins the container, volume and network names, whatever the folder is called.
 name: madmp-dsw
 
-# DSW's own configuration, passed as environment rather than through a mounted
-# application.yml. Every name below is that file's YAML path in upper case, and
-# DSW resolves a setting from the environment first, then its config file, then a
-# default compiled into the image.
+# DSW's settings, shared by server and docworker. Each name is that setting's
+# application.yml path in upper case, and DSW reads the environment before any
+# config file.
 #
-# (!!) The image ships its own application.yml underneath, and its defaults are
-# not neutral: it names the database `wizard`, where ours is whatever POSTGRES_DB
-# says. Set every value that matters rather than relying on a fallback.
+# (!!) The image carries its own application.yml underneath, whose defaults are
+# not neutral: it names the database `wizard`. Set every value that matters
+# rather than relying on a fallback.
 #
-# (!!) No `:-default` anywhere in this file. .env.example is where a default
-# value is written down, and repeating it here would give it a second home to
-# drift from. A variable missing from .env resolves to an empty string and
-# compose warns about it by name, which is what we want said out loud. It is a
-# warning and not an error, compose exits 0 either way, so what refuses to
-# start on it is `scripts/setup.sh` and not compose.
+# (!!) No `:-default` anywhere in this file. Default values are written in
+# .env.example, and a second copy here would drift from it.
 x-dsw-config: &dsw-config
   GENERAL_CLIENT_URL: ${CLIENT_URL}
   GENERAL_SECRET: ${GENERAL_SECRET}
@@ -28,18 +22,15 @@ x-dsw-config: &dsw-config
   S3_BUCKET: ${S3_BUCKET}
 
 services:
-  # server and docworker share the block above, which is what mounting one
-  # application.yml into both used to do.
+  # The DSW API.
   server:
     image: datastewardshipwizard/wizard-server:${DSW_VERSION}
-    # This image is published for amd64 only, so an ARM host runs it under
-    # emulation. The client, docworker and mailer images are multi-arch and
-    # carry no platform on purpose, one would put them under emulation too.
+    # Published for amd64 only, so an ARM host runs it emulated.
     platform: linux/amd64
     restart: always
     ports:
-      # Bound to the loopback. Reaching it from another machine goes through an
-      # HTTPS proxy, not by widening this.
+      # Loopback only. Reaching this from another machine goes through a proxy,
+      # not by widening it.
       - 127.0.0.1:3000:3000
     depends_on:
       postgres:
@@ -49,20 +40,19 @@ services:
     environment: *dsw-config
     extra_hosts:
       - host.docker.internal:host-gateway
-    # Same test as the image's own, at a usable cadence. The image ships it with
-    # a 300s interval and no start period, and docker runs the first check only
-    # after one full interval, so the container could not report healthy in under
-    # five minutes however fast it answered. docworker waits on this, and so does
-    # anything watching for the server to fall over.
+    # The image's own test, at a usable cadence. Its 300s interval and absent
+    # start period would keep the container from reporting healthy for five
+    # minutes however fast it answered.
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:3000/ || exit 1"]
       interval: 10s
       timeout: 10s
-      # The first run applies 67 migrations, which is what this leaves room for.
-      # Failures during that window do not count against retries.
+      # Room for the migrations the first run applies. Failures in this window
+      # do not count against retries.
       start_period: 300s
       retries: 3
 
+  # The web interface.
   client:
     image: datastewardshipwizard/wizard-client:${DSW_VERSION}
     restart: always
@@ -71,11 +61,11 @@ services:
       - 127.0.0.1:8080:8080
     environment:
       # The client image's own variable, not a DSW config path. The browser
-      # calls the API itself and the client only tells it where, so this has to
-      # be an address the *user's* machine resolves, never a compose service
-      # name.
+      # calls the API itself, so this has to be an address the *user's* machine
+      # resolves, never a compose service name.
       API_URL: ${API_URL}
 
+  # Renders documents.
   docworker:
     image: datastewardshipwizard/document-worker:${DSW_VERSION}
     restart: always
@@ -84,25 +74,21 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-      # The server image carries its own healthcheck, so this waits for an API
-      # that answers rather than for a container that exists.
+      # Waits for an API that answers, not for a container that exists.
       server:
         condition: service_healthy
     environment:
       <<: *dsw-config
-      # The image bakes APPLICATION_CONFIG_PATH=/app/config/application.yml, and
-      # its CLI checks that the path exists before reading any configuration. So
-      # the file has to be there even when every setting comes from the
-      # environment. /dev/null passes the check and parses as an empty document,
-      # which leaves the environment as the only source. The server has no such
-      # requirement, it starts with no config file at all.
+      # The image bakes APPLICATION_CONFIG_PATH=/app/config/application.yml and
+      # its CLI checks that the path exists before reading any configuration, so
+      # a file has to be there even when every setting comes from the
+      # environment. /dev/null passes the check and parses as an empty document.
       APPLICATION_CONFIG_PATH: /dev/null
     extra_hosts:
       - host.docker.internal:host-gateway
 
-  # Commented out rather than deleted: with mail disabled it has nothing to
-  # process and idles forever. What it leaves out is password reset and e-mail
-  # invitations, both already impossible without mail.
+  # Sends DSW's mail. Idle while mail is disabled, which is why it is commented
+  # out rather than deleted.
   #
   # (!!) Uncomment it together with enabling mail. Enabling mail without it
   # fails silently: the server queues mailer commands nobody processes, and the
@@ -117,34 +103,22 @@ services:
   #     <<: *dsw-config
   #     APPLICATION_CONFIG_PATH: /dev/null   # same requirement as docworker
 
-  # maDMP submission webhook (DSW Submit -> the registry on GitHub). Its code
-  # and its Dockerfile are both in madmp-core, and what is pulled here is the
-  # image that repository publishes on a tag. DSW reaches it by service name on
-  # the compose network (http://submission:8080), so it needs no published
-  # port.
-
+  # The maDMP submission webhook. DSW reaches it by service name on the compose
+  # network (http://submission:8080), so it needs no published port.
   submission:
-    # Pulled like every other image in this file, and nothing here is built.
-    # MADMP_CORE_VERSION is what decides which engine and which rules judge a
-    # submission, which is why it sits in .env beside the other image versions
-    # rather than inside a Dockerfile.
-    #
-    # (!!) The package is private for as long as madmp-core is, so a host that
-    # has never run `docker login ghcr.io` fails the pull with a 401 that reads
-    # like the image does not exist.
+    # (!!) The package is private for as long as its repository is, so a host
+    # that has never run `docker login ghcr.io` fails the pull with a 401 that
+    # reads like the image does not exist.
     image: ghcr.io/pstcricq/ostrails-madmp-core/submission:${MADMP_CORE_VERSION}
     restart: always
-    # Listed one by one rather than `env_file: .env`, so the webhook holds its
-    # own four variables and none of the stack's other secrets.
+    # Listed one by one rather than `env_file: .env`, so this container holds
+    # these four and none of the stack's other secrets.
     environment:
       SUBMISSION_TOKEN: ${SUBMISSION_TOKEN}
       REGISTRY_TOKEN: ${REGISTRY_TOKEN}
       REGISTRY_OWNER: ${REGISTRY_OWNER}
       REGISTRY_REPO: ${REGISTRY_REPO}
-    # /health answers only once the four variables above are in place, so this
-    # separates "misconfigured" from "up". python rather than curl, the image is
-    # python:slim and installing curl for a healthcheck would be one more
-    # package to keep patched.
+    # python rather than curl, the image carries no curl.
     healthcheck:
       test:
         - CMD
@@ -159,12 +133,13 @@ services:
     # ports:
     #   - 127.0.0.1:8085:8080
 
+  # The database.
   postgres:
     image: postgres:${POSTGRES_VERSION}
     restart: always
     # ports:
     #   - 127.0.0.1:5432:5432
-    # Not published: nothing on the host calls it. Containers reach it as
+    # Not published, nothing on the host calls it. Containers reach it as
     # postgres:5432, and inspecting it goes through the Docker daemon:
     #
     #   docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
@@ -178,9 +153,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - db-data:/var/lib/postgresql/data
-    # What server and docworker wait on, so neither starts against a database
-    # still running its first initdb.
-    #
     # (!!) -h 127.0.0.1 is what makes this honest. Without it pg_isready asks
     # over the unix socket, which the temporary server initdb runs already
     # answers, and the check would go green before the database accepts a single
@@ -195,16 +167,15 @@ services:
       timeout: 3s
       retries: 12
 
+  # Object storage, where rendered documents are kept.
   minio:
     image: minio/minio:${MINIO_VERSION}
     restart: always
     command: server /data --console-address ":9001"
     ports:
-      # 9000 is the S3 API and has to stay published: the browser fetches
-      # documents straight from MinIO through a presigned URL, so S3_URL has to
-      # resolve from the user's machine.
-      # 9001 is MinIO's own admin console, a human UI over the bucket. Kept for
-      # local inspection, and deliberately not forwarded online.
+      # 9000 is the S3 API and has to stay published, the browser fetches
+      # documents from it directly through a presigned URL. 9001 is MinIO's own
+      # admin console, kept for local inspection and not forwarded online.
       - 127.0.0.1:9000:9000
       - 127.0.0.1:9001:9001
     environment:
@@ -214,17 +185,14 @@ services:
     volumes:
       - s3-data:/data
     # `up -d` returns once the containers are created, not once they answer.
-    # createbucket waits on this rather than on a sleep.
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 5s
       timeout: 3s
       retries: 12
 
-  # Creates the bucket DSW writes into. DSW does not create it itself: in the S3
-  # API, CreateBucket and PutObject are separate operations with separate
-  # rights, and writing to a missing bucket returns NoSuchBucket. So this has to
-  # run once, after the stack is up:
+  # Creates the bucket, which DSW does not create itself. Run once, after the
+  # stack is up:
   #
   #   docker compose run --rm createbucket
   #
@@ -252,9 +220,8 @@ services:
         mc mb --ignore-existing dsw/"$$S3_BUCKET" &&
         echo "bucket $$S3_BUCKET ready"
 
-# Named volumes, so the data outlives the containers. Without them a
-# `docker compose down` takes everything with it: accounts, knowledge models,
-# projects, documents, and the bucket itself.
+# Named, so the data outlives the containers. Without them `docker compose down`
+# takes the database and the bucket with it.
 volumes:
   db-data:
   s3-data:
