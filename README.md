@@ -1,8 +1,11 @@
 # madmp-dsw
 
-A Data Stewardship Wizard 4.31 deployment for the maDMP project, plus the one
-piece of code it carries of its own: the **submission webhook**, which commits a
-rendered DMP into the `dmp-registry` repository.
+A Data Stewardship Wizard 4.31 deployment for the maDMP project, plus one
+service that is not DSW's: the **submission webhook**, which commits a rendered
+DMP into the registry repository. It carries no code of its own. The webhook is
+built and published by
+[madmp-core](https://github.com/pstcricq/ostrails-madmp-core), and what is here
+is the image tag, the four variables and the compose service that runs it.
 
 It starts from the [official deployment
 example](https://github.com/ds-wizard/dsw-deployment-example) at its 4.31
@@ -74,13 +77,17 @@ so `docker-compose.yml` composes DSW's own settings out of the values in `.env`.
 The variable names are the `application.yml` paths in upper case:
 `general.clientUrl` is `GENERAL_CLIENT_URL`, `s3.url` is `S3_URL`.
 
-Nineteen values, in two groups:
+Twenty values, in two groups:
 
-- **eleven carry a working value**: the four image versions, the database name,
+- **twelve carry a working value**: the five image versions, the database name,
   the two usernames, the bucket, and the three URLs of a local deployment
 - **eight are empty**: the two passwords, the two DSW signing secrets, and the
   webhook's four variables. `.env.example` says what each one is and gives the
   command that produces it where there is one
+
+The five image versions include `MADMP_CORE_VERSION`, which is not a
+dependency's version but the webhook's, and the one value here that decides
+which engine and which rules a submitted DMP is judged by.
 
 `scripts/setup.sh` reports every value it finds, where it comes from, and stops
 if one is missing. Secrets are reported as `set`, never printed.
@@ -118,11 +125,11 @@ Two cases need a change in `docker-compose.yml` itself rather than in `.env`:
 
 ## The submission webhook
 
-**The webhook is not in this repository.** It lives in
+**Neither the webhook nor its image is in this repository.** Both live in
 [madmp-core](https://github.com/pstcricq/ostrails-madmp-core), next to the
-rules it checks a document against, and the image installs it from there at a
-pinned version. What is here is the deployment: the compose service, its four
-variables, and the one build secret that reads that private repository.
+rules the webhook checks a document against, and that repository's CI publishes
+the image on every version tag. What is here is the deployment: the compose
+service, its four variables, and the tag it pulls.
 
 DSW's Submit feature POSTs a rendered DMP to
 `http://submission:8080/submissions?project=<folder>` on the compose network, so
@@ -147,17 +154,24 @@ Submitting the same DMP twice commits nothing the second time.
 The token it commits with needs `Contents: Read and write` on the registry
 repository, and nothing else.
 
-Building the image needs a second one, `MADMP_CORE_TOKEN`, with
-`Contents: Read` on madmp-core, for as long as that repository is private. It
-is read once, as a BuildKit secret, and is in no layer of what runs:
+Nothing is built here. The image comes from
+`ghcr.io/pstcricq/ostrails-madmp-core/submission`, at the tag
+`MADMP_CORE_VERSION` names in `.env`. Bumping that one value is how a
+deployment moves to a newer engine or newer rules, and it is the only thing
+here that decides which madmp-core is in use:
 
 ```bash
-MADMP_CORE_TOKEN=... docker compose build submission
+docker compose pull submission && docker compose up -d submission
 ```
 
-Which version it installs is `MADMP_CORE_VERSION` in `submission/Dockerfile`.
-Bumping it is how a deployment moves to a newer engine or newer rules, and it
-is the only thing here that decides which madmp-core is in use.
+The package is private for as long as madmp-core is, so the host has to be
+logged in to pull it. Once, with a token carrying `read:packages`:
+
+```bash
+docker login ghcr.io -u <github-user>
+```
+
+Without it the pull fails with a 401 that reads like the image does not exist.
 
 The container needs **outbound HTTPS to `api.github.com`**, which is the one
 thing in this deployment that reaches outside the host. Everything else talks
@@ -226,21 +240,13 @@ daemon rather than the network.
 
 ## Working on the webhook
 
-```bash
-uv run pytest -q          # 39 tests
-uv run ruff check .
-uv run ruff format .
-```
+Not here. Its code, its tests and its image are in madmp-core, and it is
+checked where it lives. What reaches this repository is a tag in `.env`.
 
-CI runs those, plus three checks on the deployment itself: that
-`submission/requirements.txt` still matches `uv.lock`, that the compose file
-resolves, and that `scripts/setup.sh` passes shellcheck.
-
-Adding a dependency means regenerating the file the image installs from:
-
-```bash
-uv export -q --frozen --no-dev --no-emit-project -o submission/requirements.txt
-```
+CI here runs the three checks this repository can answer without deploying:
+that the compose file resolves against `.env.example`, that `scripts/setup.sh`
+passes shellcheck, and that the workflows pass actionlint. Whether a deployment
+is *correct* only shows on a real host, and nothing here pretends otherwise.
 
 ## Layout
 
@@ -248,12 +254,7 @@ uv export -q --frozen --no-dev --no-emit-project -o submission/requirements.txt
 docker-compose.yml          the seven services
 .env.example                every value the stack reads
 scripts/setup.sh            reports the configuration, then brings the stack up
-submission/                 the webhook: app.py, service.py, github_client.py
-  Dockerfile                its image, installing from requirements.txt
-  requirements.txt          generated from uv.lock, hashes included
-tests/                      the webhook's unit tests
-pyproject.toml, uv.lock     one uv environment for the webhook and its tests
-.github/workflows/ci.yml    six checks
+.github/workflows/ci.yml    three checks on the deployment files
 ```
 
 ## What differs from upstream

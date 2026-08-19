@@ -37,11 +37,15 @@ jobs:
       # parses, a variable that resolves to nothing, a quoting mistake in the
       # one script a deployment runs.
       #
-      # A value is given for the build secret because `config` resolves it and
-      # an empty one is an error. Nothing is built here.
+      # Nothing is built and nothing is pulled.
+      #
+      # (!!) This catches a file that no longer parses, and not a variable
+      # missing from .env.example: compose warns on an undefined variable,
+      # substitutes an empty string and exits 0. Measured, not assumed. What
+      # actually guards that is `scripts/setup.sh`, which reports every value as
+      # MISSING and refuses to start, and names the keys .env.example has gained
+      # since an .env was written.
       - name: The compose file resolves
-        env:
-          MADMP_CORE_TOKEN: not-a-token
         run: docker compose --env-file .env.example config --quiet
       - name: The deployment script
         run: shellcheck scripts/setup.sh

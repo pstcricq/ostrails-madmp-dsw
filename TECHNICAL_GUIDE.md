@@ -9,10 +9,14 @@ something is believed rather than verified, it says so.
 ## 1. Scope
 
 **A deployment, and nothing else.** No maDMP rules, no quality checks, no
-application code: the webhook that receives a rendered document, checks it and
-commits it lives in `madmp-core`, and this repository installs it. It held that
-code from 10/08/2026 until 19/08/2026, and giving it back is what makes this
-boundary true again rather than nearly true.
+application code, and since 19/08/2026 not even a Dockerfile: the webhook that
+receives a rendered document, checks it and commits it lives in `madmp-core`,
+which also builds and publishes its image, and this repository names a tag of
+it. It held that code from 10/08/2026 until 19/08/2026, and giving it back,
+image included, is what makes this boundary true rather than nearly true.
+
+The test of the boundary is simple: nothing here has to change when the webhook
+does. A newer engine or newer rules is one value in `.env`.
 
 The upstream deployment example is kept as the `upstream` remote so later DSW
 releases can be compared, not merged.
@@ -145,15 +149,15 @@ the same secrets.
 
 ## 6. The webhook
 
-**Its code is not here.** It lives in madmp-core, and the image installs it
-from there at a pinned version. The check it runs on a submitted document needs
-that repository's engine and its rules files, and pinning one version pins
-both: a document is checked by the release the image names, and the verdict
-committed beside it in the registry says which.
+**Its code is not here, and neither is its image.** Both are in madmp-core, and
+what this deployment holds is the tag it pulls. The check the webhook runs on a
+submitted document needs that repository's engine and its rules files, and
+pinning one version pins both: a document is checked by the release the image
+names, and the verdict committed beside it in the registry says which.
 
 What stays here is the deployment: the compose service, the four variables it
-passes, the healthcheck, and the build secret. That is the same line as for
-every other service in this file.
+passes, and the healthcheck. That is the same line as for every other service
+in this file.
 
 **Configuration is read once, at startup.** A misconfigured webhook refuses to
 start. Reading the variables per request lets it answer `/health` and fail on
@@ -167,59 +171,51 @@ and `GITHUB_TOKEN` is a name a developer's shell very often already holds. The
 collision would have the webhook commit with someone else's credentials, in
 silence.
 
-**The build token is a BuildKit secret, never a build argument.** An argument
-is readable in the image history by anyone who pulls it, and this one reads a
-private repository. Two stages, so neither git nor the token is in what runs,
-and `docker history` shows neither.
-
-**Outbound HTTPS to `api.github.com`** is the one thing in this deployment that
-reaches outside the host. Everything else talks on the compose network.
+**Outbound HTTPS to `api.github.com`** is the one thing this deployment does at
+runtime that reaches outside the host. Everything else talks on the compose
+network, `ghcr.io` being reached only when an image is pulled.
 
 ## 7. The image
 
-`submission/Dockerfile` installs from `submission/requirements.txt`, generated
-from `uv.lock` by `uv export`, with `--require-hashes`. CI regenerates the file
-and fails on a diff, so drift is impossible rather than discouraged.
+**It is not built here.** `docker-compose.yml` names
+`ghcr.io/pstcricq/ostrails-madmp-core/submission:${MADMP_CORE_VERSION}` and
+pulls it, exactly as it pulls DSW's three images, Postgres and MinIO. The
+submission service was the only `build:` in this file, and it no longer is.
 
-The hashes are what make it worth having: without them the file pins versions,
-with them the build refuses anything whose content is not what the lock
-resolved.
+The Dockerfile went to madmp-core on 19/08/2026, the same day the code did and
+for the same reason. Everything the image packages is there: the webhook, the
+rules a document is checked against, and the engine that runs them. Its
+entrypoint and the extra it installs are declared in that repository's
+`pyproject.toml`, so a Dockerfile sitting here was a file in one repository
+that broke when another changed, with nothing to say so until the next build.
 
-Pinning versions directly in the Dockerfile looks equivalent and is not.
-Pinning `fastapi` leaves `starlette`, `pydantic` and twenty others floating, so
-the build stays irreproducible while gaining a third list to keep in step.
+**What this deployment gained.** No build, so no `git`, no BuildKit secret, and
+no token that reads a private *source* repository, which is strictly more than
+a deployment ever needed to hold. `MADMP_CORE_VERSION` moves from an `ARG`
+inside a Dockerfile to `.env`, beside the five other image versions, which is
+where a version pin belongs and where `scripts/setup.sh` already reports it.
 
-The base image tag floats on purpose, where every other image is pinned to a
-patch release. `python:3.12-slim` carries Debian's security updates without
-intervention, and what determines behaviour is pinned by hash below it.
+**What it cost.** Publishing a fix now takes a tag in madmp-core and a CI run,
+where `docker compose build submission` used to be enough. That is the same
+trade already accepted on 19/08: rules move rarely, and a deployment that
+cannot build is a deployment that cannot drift.
 
-The container runs as an unprivileged user. It reads a request and writes no
-file, so it needs nothing, and root inside a container is root on the host
-kernel for anything that escapes it.
+**The package is private**, because the repository is, so a host has to
+`docker login ghcr.io` once with a token carrying `read:packages`. A host that
+has not fails the pull with a 401 that reads like the image does not exist. A
+package's visibility is a setting of its own, separate from the repository's,
+so making it public would remove the last credential a deployment needs to
+stand up. Not done, and not decided.
 
-## 8. Tests
+**The image runs as an unprivileged user**, built in two stages so pip and its
+caches stay out of what runs. Both are properties of the Dockerfile and are
+documented where it now lives.
 
-39 tests, no network, no Docker.
+## 8. CI
 
-**The GitHub double is deliberately strict.** `FakeGitHub` raises a 409 when
-asked to write over an existing file without a `sha`, because that is what
-GitHub does. A double that accepts more than the real thing lets code pass the
-suite and fail in production: removing `sha=existing["sha"]` from `service.py`
-breaks every update, and two tests catch it.
-
-**One section reaches the real client**, with `urlopen` replaced. Everything
-else runs against the double, so the transport, the base64 encoding and the
-status handling would otherwise be untested, and that is where a wrong status
-reading costs a DMP.
-
-`/health` is tested because the compose healthcheck depends on it: `up --wait`
-and the container's restart both hang on it answering.
-
-## 9. CI
-
-Six checks. Three on the code, ruff twice and pytest, and three on the
-deployment: the requirements against the lockfile, `docker compose config`, and
-shellcheck on `scripts/setup.sh`.
+Three checks, all on the deployment files: `docker compose config` against
+`.env.example`, shellcheck on `scripts/setup.sh`, and actionlint on the
+workflows.
 
 The distinction the header makes is deliberate. CI can tell whether the
 deployment files **parse and resolve**. It cannot tell whether a deployment is
@@ -232,7 +228,7 @@ workflows, each with the tool that reads it. The token is reduced to
 `contents: read`, and the job has a timeout, since a stuck job holds a runner
 for six hours by default.
 
-## 10. Known limits
+## 9. Known limits
 
 **Idempotence stops above 1 MB.** GitHub's Contents API inlines a file's content
 up to 1 MB and answers with an empty `content` above that, and that read is how
@@ -243,10 +239,12 @@ is concerned, a commit carries its files as tree entries and has no such limit.
 
 **The image's dependencies are resolved at build time, not locked.** The
 webhook used to install from a hash-pinned `requirements.txt` generated from a
-lockfile. Installing madmp-core from a tag pins that repository exactly and
-leaves its transitive dependencies to pip, so two builds of the same
-`MADMP_CORE_VERSION` can differ. What would close it is madmp-core publishing a
-hashed requirements file with its releases, and nothing needs it yet.
+lockfile. Installing madmp-core from its own source pins that repository
+exactly and leaves its transitive dependencies to pip, so two builds of the
+same tag can differ. This deployment no longer builds, so it is spared the
+consequence, a pulled image being one set of bytes whoever pulls it. What would
+close it is madmp-core installing from its committed lockfile in the image, and
+nothing needs it yet.
 
 **No retry and no rate-limit handling.** GitHub answering 403 or 429 surfaces as
 a 502 to DSW. Acceptable for one instance submitting occasionally.
@@ -258,7 +256,7 @@ GitHub Enterprise. Nothing passes it, including the tests.
 published. The setup script warns for as long as they answer, and that is all it
 does.
 
-## 11. Open decisions
+## 10. Open decisions
 
 - **`S3_URL` behind a proxy.** The browser fetches documents straight from
   MinIO through a presigned URL, so MinIO needs a public address. A subdomain

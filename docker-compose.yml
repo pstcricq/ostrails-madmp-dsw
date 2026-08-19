@@ -14,7 +14,9 @@ name: madmp-dsw
 # (!!) No `:-default` anywhere in this file. .env.example is where a default
 # value is written down, and repeating it here would give it a second home to
 # drift from. A variable missing from .env resolves to an empty string and
-# compose names it, which is the failure we want.
+# compose warns about it by name, which is what we want said out loud. It is a
+# warning and not an error, compose exits 0 either way, so what refuses to
+# start on it is `scripts/setup.sh` and not compose.
 x-dsw-config: &dsw-config
   GENERAL_CLIENT_URL: ${CLIENT_URL}
   GENERAL_SECRET: ${GENERAL_SECRET}
@@ -115,18 +117,22 @@ services:
   #     <<: *dsw-config
   #     APPLICATION_CONFIG_PATH: /dev/null   # same requirement as docworker
 
-  # maDMP submission webhook (DSW Submit -> dmp-registry on GitHub). Source in
-  # ./submission. DSW reaches it by service name on the compose network
-  # (http://submission:8080), so it needs no published port.
+  # maDMP submission webhook (DSW Submit -> the registry on GitHub). Its code
+  # and its Dockerfile are both in madmp-core, and what is pulled here is the
+  # image that repository publishes on a tag. DSW reaches it by service name on
+  # the compose network (http://submission:8080), so it needs no published
+  # port.
 
   submission:
-    build:
-      context: ./submission
-      # Read at build time to install madmp-core, which is private, and never
-      # written into a layer: a build argument would be readable in the image
-      # history by anyone who pulls it.
-      secrets:
-        - madmp_core_token
+    # Pulled like every other image in this file, and nothing here is built.
+    # MADMP_CORE_VERSION is what decides which engine and which rules judge a
+    # submission, which is why it sits in .env beside the other image versions
+    # rather than inside a Dockerfile.
+    #
+    # (!!) The package is private for as long as madmp-core is, so a host that
+    # has never run `docker login ghcr.io` fails the pull with a 401 that reads
+    # like the image does not exist.
+    image: ghcr.io/pstcricq/ostrails-madmp-core/submission:${MADMP_CORE_VERSION}
     restart: always
     # Listed one by one rather than `env_file: .env`, so the webhook holds its
     # own four variables and none of the stack's other secrets.
@@ -252,10 +258,3 @@ services:
 volumes:
   db-data:
   s3-data:
-
-# Build-time only, and only for the webhook's image. `MADMP_CORE_TOKEN` reads
-# madmp-core for as long as it is private, a fine-grained token with
-# Contents: Read on it and nothing else.
-secrets:
-  madmp_core_token:
-    environment: MADMP_CORE_TOKEN
