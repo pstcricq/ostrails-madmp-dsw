@@ -253,4 +253,12 @@ there.
 
 ## License
 
-MIT, from the upstream deployment example. See [LICENSE](LICENSE).
+Two, because this repository is a derivative.
+
+The deployment example it starts from is **MIT**, Copyright (c) 2019 Data
+Stewardship Wizard, and that notice stays where it is: [LICENSE](LICENSE).
+
+Everything written for this repository is **Apache-2.0**, Copyright 2026
+Pierre St-Cricq dit Lompre (SOCIB): [LICENSE-APACHE](LICENSE-APACHE). That
+covers the compose file, `scripts/setup.sh`, `.env.example` and the
+documentation here.
