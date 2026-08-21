@@ -253,12 +253,12 @@ there.
 
 ## License
 
-Two, because this repository is a derivative.
+**Apache-2.0**, Copyright 2026 Pierre St-Cricq dit Lompre (SOCIB), as part of
+the OSTrails project. See [LICENSE](LICENSE).
 
-The deployment example it starts from is **MIT**, Copyright (c) 2019 Data
-Stewardship Wizard, and that notice stays where it is: [LICENSE](LICENSE).
-
-Everything written for this repository is **Apache-2.0**, Copyright 2026
-Pierre St-Cricq dit Lompre (SOCIB): [LICENSE-APACHE](LICENSE-APACHE). That
-covers the compose file, `scripts/setup.sh`, `.env.example` and the
-documentation here.
+This repository derives from
+[ds-wizard/dsw-deployment-example](https://github.com/ds-wizard/dsw-deployment-example)
+at its 4.31 release, which is MIT. That licence permits sublicensing, so the
+work as a whole is published under Apache-2.0, and the original notice is kept
+in full in [NOTICE](NOTICE), as the MIT License requires. Read that file before
+redistributing.
