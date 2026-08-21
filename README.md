@@ -7,12 +7,19 @@ DMP into the registry repository.
 This repository carries no application code. The webhook is built and published
 by [madmp-core](https://github.com/pstcricq/ostrails-madmp-core), and what is
 here is the image tag, the four variables and the compose service that runs it.
+The plans it commits land in
+[madmp-registry](https://github.com/pstcricq/ostrails-madmp-registry).
 
 It starts from the [official deployment
 example](https://github.com/ds-wizard/dsw-deployment-example) at its 4.31
 release, kept as the `upstream` remote. What differs from it is listed at the
-end of this file. **Why any of it is the way it is** is in madmp-core's
-`doc.md`, section 11.
+end of this file.
+
+**Service by service, variable by variable, and what to look at when something
+is wrong, is in the technical reference:**
+<https://pstcricq.github.io/ostrails-madmp-technical-docs/dsw/01-stack/>
+
+This README says how to run it.
 
 ## Quick start
 
